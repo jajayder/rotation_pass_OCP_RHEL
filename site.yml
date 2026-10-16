@@ -9,6 +9,10 @@
       ansible.builtin.include_vars:
         file: vars/clusters.yml
 
+    - name: Carregar variaveis dos clusters
+      ansible.builtin.include_vars:
+        file: group_vars/vars.yml
+
     - name: Inicializar estruturas da execucao
       ansible.builtin.set_fact:
         ocp_sessions: []
