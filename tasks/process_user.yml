@@ -39,7 +39,7 @@
   register: ad_query_raw
   changed_when: false
   failed_when: false
-  no_log: true
+#  no_log: true
 
 - name: Interpretar retorno da consulta de expiracao
   ansible.builtin.set_fact:
