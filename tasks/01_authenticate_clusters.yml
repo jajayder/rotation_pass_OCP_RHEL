@@ -17,10 +17,10 @@
 
 - name: Registrar sessoes OCP que autenticaram
   ansible.builtin.set_fact:
-    ocp_sessions: "{{ ocp_sessions + [ {'cluster': item.item, 'api_key': item.openshift_auth.api_key} ] }}"
+    ocp_sessions: "{{ ocp_sessions + [ {'cluster': item.cluster, 'api_key': item.openshift_auth.api_key} ] }}"
   loop: "{{ ocp_auth_results.results }}"
   loop_control:
-    label: "{{ item.item.name }}"
+    label: "{{ item.cluster.name }}"
   when:
     - item.openshift_auth is defined
     - item.openshift_auth.api_key is defined
@@ -30,8 +30,8 @@
   ansible.builtin.set_fact:
     ocp_cluster_errors: "{{ ocp_cluster_errors + [ {
       'username': 'N/A',
-      'cluster': item.item.name,
-      'environment': item.item.environment,
+      'cluster': item.cluster.name,
+      'environment': item.cluster.environment,
       'namespace': 'N/A',
       'secret': 'N/A',
       'days_remaining': 'N/A',
@@ -40,5 +40,5 @@
     } ] }}"
   loop: "{{ ocp_auth_results.results }}"
   loop_control:
-    label: "{{ item.item.name }}"
+    label: "{{ item.cluster.name }}"
   when: item.openshift_auth is not defined or item.openshift_auth.api_key is not defined
