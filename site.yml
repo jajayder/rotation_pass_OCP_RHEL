@@ -1,4 +1,4 @@
----
+--- 
 - name: Rotacao de senhas dos aplic-users OCP x AD (bastion RHEL / pwsh)
   hosts: ad_bastion
   gather_facts: false
