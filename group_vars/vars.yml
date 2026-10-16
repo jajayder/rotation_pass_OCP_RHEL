@@ -45,7 +45,7 @@ ocp_validate_certs: false
 aplic_user_prefix: "aplic-user-"
 
 # E-mail
-mail_host: "smtp.energisa.com.br"
+mail_host: "mail.energisa.com.br"
 mail_port: 25
 mail_from: "iac-infra@energisa.com.br"
 mail_to:
