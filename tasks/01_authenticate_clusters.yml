@@ -2,8 +2,8 @@
 - name: Autenticar no OpenShift
   community.okd.openshift_auth:
     host: "{{ cluster.api_url }}"
-    username: "{{ ocp_user }}" #"{{ username }}"
-    password: "{{ ocp_pass }}" #"{{ password }}"
+    username: "{{ ad_user }}" #"{{ username }}"
+    password: "{{ ad_pass }}" #"{{ password }}"
     validate_certs: "{{ ocp_validate_certs }}"
     state: present
   loop: "{{ ocp_clusters }}"
