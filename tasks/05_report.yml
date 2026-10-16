@@ -34,4 +34,4 @@
     subject: "{{ mail_subject_prefix }} - {{ ansible_date_time.date | default(lookup('pipe', 'date +%Y-%m-%d')) }}"
     subtype: html
     body: "{{ report_html }}"
-  delegate_to: localhost
+#  delegate_to: localhost
