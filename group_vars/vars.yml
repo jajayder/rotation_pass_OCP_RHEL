@@ -1,0 +1,62 @@
+---
+# Dominio AD
+ad_domain: "scl.corp"
+
+# Bastion RHEL que possui acesso ao AD e roda os .ps1 via pwsh
+# (substitui o antigo host Windows 10.83.103.61).
+ad_server: "OCBASTIOCPD2"
+
+# ---------------------------------------------------------------------------
+# Conexao LDAP com o AD a partir do bastion RHEL (pwsh / S.DS.Protocols)
+# ---------------------------------------------------------------------------
+# Servidor LDAP: FQDN de um Domain Controller ou o proprio dominio
+# (DNS round-robin entre os DCs). Ex.: "dc01.scl.corp".
+ldap_server: "{{ ad_domain }}"
+# LDAPS e obrigatorio para a troca de senha (unicodePwd).
+ldap_port: 636
+ldap_use_ssl: true
+# Mantido como false para seguir a mesma postura do ocp_validate_certs.
+# Defina true e publique a CA do AD no trust do RHEL para validar o certificado.
+ldap_validate_certs: false
+
+# Conta de servico de LEITURA no AD (bind para consultar expiracao).
+# Forneca via Survey/credencial do AAP (extra vars), NAO versione no Git.
+# Validar e trocar senha usam a propria senha do usuario, nao esta conta.
+ldap_bind_user: "{{ ad_read_user | default('') }}"      # ex.: svc-ldap-read@scl.corp
+ldap_bind_password: "{{ ad_read_pass | default('') }}"
+
+# Binario do PowerShell (PowerShell Core) no RHEL.
+pwsh_bin: "/usr/bin/pwsh"
+
+# Regras de rotacao
+password_rotation_min_days: 0
+password_rotation_max_days: 10
+password_min_length: 12
+password_max_length: 20
+password_special_chars: '!@#%^&*_-+='
+
+# V1: nao reinicia workloads.
+restart_deployments: false
+
+# OCP
+ocp_validate_certs: false
+
+# Prefixo dos usuarios elegiveis
+aplic_user_prefix: "aplic-user-"
+
+# E-mail
+mail_host: "smtp.energisa.com.br"
+mail_port: 25
+mail_from: "iac-infra@energisa.com.br"
+mail_to:
+  - jayder.carneiro@energisaterceiros.com.br
+  - carlos.aquino@energisa.com.br
+  - lmauricio.dutra@energisaterceiros.com.br
+  - valeria.victor@energisa.com.br
+  - hugo@energisa.com.br
+  - carlos.andre@energisa.com.br
+  - antonio.neves@energisa.com.br
+  - john.sousa@energisa.com.br
+  - phenrique.ccosta@energisaterceiros.com.br
+mail_cc: []
+mail_subject_prefix: "Atualização de credenciais"

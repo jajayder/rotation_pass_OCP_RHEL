@@ -1,0 +1,55 @@
+---
+- name: Listar todos os Secrets de todos os namespaces
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    host: "{{ ocp_session.cluster.api_url }}"
+    api_key: "{{ ocp_session.api_key }}"
+    validate_certs: "{{ ocp_validate_certs }}"
+  register: cluster_secrets
+  delegate_to: localhost
+  no_log: true
+  failed_when: false
+
+- name: Registrar falha de descoberta do cluster
+  ansible.builtin.set_fact:
+    ocp_cluster_errors: "{{ ocp_cluster_errors + [ {
+      'username': 'N/A',
+      'cluster': ocp_session.cluster.name,
+      'environment': ocp_session.cluster.environment,
+      'namespace': 'N/A',
+      'secret': 'N/A',
+      'days_remaining': 'N/A',
+      'status': 'SECRET_DISCOVERY_FAILED',
+      'detail': (cluster_secrets.msg | default('Falha ao listar Secrets')) | string
+    } ] }}"
+  when: cluster_secrets.failed | default(false)
+
+- name: Adicionar Secrets elegiveis ao inventario global
+  ansible.builtin.set_fact:
+    secret_inventory: "{{ secret_inventory + [ {
+      'username': (secret_item.data.username | b64decode),
+      'password': (secret_item.data.password | b64decode),
+      'cluster': ocp_session.cluster.name,
+      'environment': ocp_session.cluster.environment,
+      'namespace': secret_item.metadata.namespace,
+      'secret': secret_item.metadata.name
+    } ] }}"
+  loop: "{{ cluster_secrets.resources | default([]) }}"
+  loop_control:
+    loop_var: secret_item
+    label: "{{ secret_item.metadata.namespace | default('N/A') }}/{{ secret_item.metadata.name | default('N/A') }}"
+  when:
+    - not (cluster_secrets.failed | default(false))
+    - secret_item.type | default('') == 'Opaque'
+    - secret_item.data is defined
+    - secret_item.data.username is defined
+    - secret_item.data.password is defined
+    - (secret_item.data.username | b64decode) is string
+    - (secret_item.data.username | b64decode) | lower is match('^' ~ aplic_user_prefix | lower)
+  no_log: true
+
+- name: Construir lista unica de aplic-users
+  ansible.builtin.set_fact:
+    unique_aplic_users: "{{ secret_inventory | map(attribute='username') | unique | list }}"
+  no_log: true

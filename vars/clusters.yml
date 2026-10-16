@@ -1,0 +1,17 @@
+---
+ocp_clusters:
+  - name: OCPD2
+    environment: DEV
+    api_url: "https://api.ocpd2.energisa.corp:6443"
+
+  - name: OCPH2
+    environment: HMG
+    api_url: "https://ocph2.energisa.corp:6443"
+
+  # - name: OCPD1
+  #   environment: DEV
+  #   api_url: "https://api.ocpd1.energisa.corp:6443"
+
+  # - name: OCPH1
+  #   environment: HMG
+  #   api_url: "https://api.ocph1.energisa.corp:6443"

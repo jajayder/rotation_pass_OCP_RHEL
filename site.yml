@@ -1,0 +1,36 @@
+---
+- name: Rotacao de senhas dos aplic-users OCP x AD (bastion RHEL / pwsh)
+  hosts: ad_bastion
+  gather_facts: false
+  strategy: linear
+
+  tasks:
+    - name: Carregar variaveis dos clusters
+      ansible.builtin.include_vars:
+        file: vars/clusters.yml
+
+    - name: Inicializar estruturas da execucao
+      ansible.builtin.set_fact:
+        ocp_sessions: []
+        ocp_cluster_errors: []
+        secret_inventory: []
+        unique_aplic_users: []
+        report_rows: []
+        users_updated: []
+        users_failed: []
+        secrets_updated_count: 0
+
+    - name: step 01 - Autenticar nos clusters
+      ansible.builtin.include_tasks: tasks/01_authenticate_clusters.yml
+
+    - name: step 02 - Descobrir Secrets
+      ansible.builtin.include_tasks: tasks/02_discover_secrets.yml
+
+    - name: step 03 - Processar aplic-users
+      ansible.builtin.include_tasks: tasks/03_process_users.yml
+
+    - name: step 04 - Encerrar sessoes OCP
+      ansible.builtin.include_tasks: tasks/04_logout_clusters.yml
+
+    - name: step 05 - Gerar e enviar relatorio
+      ansible.builtin.include_tasks: tasks/05_report.yml

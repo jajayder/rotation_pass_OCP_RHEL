@@ -1,0 +1,13 @@
+---
+- name: Encerrar sessoes autenticadas no OpenShift
+  community.okd.openshift_auth:
+    host: "{{ item.cluster.api_url }}"
+    api_key: "{{ item.api_key }}"
+    validate_certs: "{{ ocp_validate_certs }}"
+    state: absent
+  loop: "{{ ocp_sessions }}"
+  loop_control:
+    label: "{{ item.cluster.name }}"
+  delegate_to: localhost
+  no_log: true
+  failed_when: false

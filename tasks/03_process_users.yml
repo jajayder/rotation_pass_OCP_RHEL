@@ -1,0 +1,7 @@
+---
+- name: Processar cada aplic-user uma unica vez
+  ansible.builtin.include_tasks: process_user.yml
+  loop: "{{ unique_aplic_users }}"
+  loop_control:
+    loop_var: current_user
+    label: "{{ current_user }}"

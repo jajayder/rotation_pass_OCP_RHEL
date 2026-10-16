@@ -1,0 +1,44 @@
+---
+- name: Autenticar no OpenShift
+  community.okd.openshift_auth:
+    host: "{{ cluster.api_url }}"
+    username: "{{ ocp_user }}" #"{{ username }}"
+    password: "{{ ocp_pass }}" #"{{ password }}"
+    validate_certs: "{{ ocp_validate_certs }}"
+    state: present
+  loop: "{{ ocp_clusters }}"
+  loop_control:
+    loop_var: cluster
+    label: "{{ cluster.name }} ({{ cluster.environment }})"
+  register: ocp_auth_results
+  delegate_to: localhost
+  no_log: true
+  failed_when: false
+
+- name: Registrar sessoes OCP que autenticaram
+  ansible.builtin.set_fact:
+    ocp_sessions: "{{ ocp_sessions + [ {'cluster': item.item, 'api_key': item.openshift_auth.api_key} ] }}"
+  loop: "{{ ocp_auth_results.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when:
+    - item.openshift_auth is defined
+    - item.openshift_auth.api_key is defined
+  no_log: true
+
+- name: Registrar falhas de autenticacao OCP
+  ansible.builtin.set_fact:
+    ocp_cluster_errors: "{{ ocp_cluster_errors + [ {
+      'username': 'N/A',
+      'cluster': item.item.name,
+      'environment': item.item.environment,
+      'namespace': 'N/A',
+      'secret': 'N/A',
+      'days_remaining': 'N/A',
+      'status': 'CLUSTER_ACCESS_FAILED',
+      'detail': (item.msg | default('Falha de autenticacao no cluster')) | string
+    } ] }}"
+  loop: "{{ ocp_auth_results.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: item.openshift_auth is not defined or item.openshift_auth.api_key is not defined

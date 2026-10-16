@@ -1,0 +1,37 @@
+---
+- name: Anexar erros de infraestrutura OCP ao relatorio
+  ansible.builtin.set_fact:
+    report_rows: "{{ report_rows + [ item ] }}"
+  loop: "{{ ocp_cluster_errors }}"
+
+- name: Calcular resumo da execucao
+  ansible.builtin.set_fact:
+    report_updated_users: "{{ report_rows | selectattr('status', 'equalto', 'UPDATED') | map(attribute='username') | unique | list }}"
+    report_summary:
+      clusters_count: "{{ ocp_clusters | length }}"
+      cluster_names: "{{ ocp_clusters | map(attribute='name') | list }}"
+      users_found: "{{ unique_aplic_users | length }}"
+      users_updated: "{{ report_rows | selectattr('status', 'equalto', 'UPDATED') | map(attribute='username') | unique | list | length }}"
+      password_expired: "{{ report_rows | selectattr('status', 'equalto', 'PASSWORD_EXPIRED') | map(attribute='username') | unique | list | length }}"
+      never_expires: "{{ report_rows | selectattr('status', 'equalto', 'PASSWORD_NEVER_EXPIRES') | map(attribute='username') | unique | list | length }}"
+      not_due: "{{ report_rows | selectattr('status', 'equalto', 'NOT_DUE') | map(attribute='username') | unique | list | length }}"
+      password_not_compatible: "{{ report_rows | selectattr('status', 'equalto', 'PASSWORD_NOT_COMPATIBLE') | map(attribute='username') | unique | list | length }}"
+      partial_failures: "{{ report_rows | selectattr('status', 'equalto', 'SECRET_UPDATE_FAILED') | map(attribute='username') | unique | list | length }}"
+      ad_failures: "{{ report_rows | selectattr('status', 'equalto', 'AD_CHANGE_FAILED') | map(attribute='username') | unique | list | length }}"
+      secrets_updated: "{{ secrets_updated_count }}"
+
+- name: Gerar corpo HTML do e-mail
+  ansible.builtin.set_fact:
+    report_html: "{{ lookup('ansible.builtin.template', 'templates/email_report.html.j2') }}"
+
+- name: Enviar relatorio por e-mail
+  community.general.mail:
+    host: "{{ mail_host }}"
+    port: "{{ mail_port }}"
+    from: "{{ mail_from }}"
+    to: "{{ mail_to }}"
+    cc: "{{ mail_cc }}"
+    subject: "{{ mail_subject_prefix }} - {{ ansible_date_time.date | default(lookup('pipe', 'date +%Y-%m-%d')) }}"
+    subtype: html
+    body: "{{ report_html }}"
+  delegate_to: localhost

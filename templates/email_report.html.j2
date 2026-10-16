@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<style>
+body { font-family: Arial, Helvetica, sans-serif; color: #222; }
+h2 { margin-bottom: 4px; }
+.summary { border-collapse: collapse; margin: 12px 0 20px 0; }
+.summary td { border: 1px solid #ddd; padding: 7px 12px; }
+.summary td:first-child { font-weight: bold; background: #f5f5f5; }
+table.report { border-collapse: collapse; width: 100%; font-size: 12px; }
+table.report th { background: #333; color: #fff; padding: 8px; border: 1px solid #ccc; text-align: left; }
+table.report td { padding: 7px; border: 1px solid #ccc; }
+.updated { background: #c6efce; color: #006100; font-weight: bold; }
+.failed { background: #ffc7ce; color: #9c0006; font-weight: bold; }
+.warning { background: #ffeb9c; color: #9c6500; font-weight: bold; }
+.neutral { background: #f2f2f2; }
+</style>
+</head>
+<body>
+<h2>Relatório de Rotação de Senhas — aplic-users</h2>
+<p><strong>Data da execução:</strong> {{ lookup('pipe', 'date "+%d/%m/%Y %H:%M:%S"') }}</p>
+<p><strong>Clusters avaliados:</strong> {{ report_summary.clusters_count }} - {{ report_summary.cluster_names | join(' - ') }}</p>
+
+<table class="summary">
+<tr><td>Usuários encontrados</td><td>{{ report_summary.users_found }}</td></tr>
+<tr><td>Usuários atualizados</td><td>{{ report_summary.users_updated }}</td></tr>
+<tr><td>Senhas expiradas</td><td>{{ report_summary.password_expired }}</td></tr>
+<tr><td>Senhas nunca expiram</td><td>{{ report_summary.never_expires }}</td></tr>
+<tr><td>Não elegíveis (> 10 dias)</td><td>{{ report_summary.not_due }}</td></tr>
+<tr><td>Senha não compatível</td><td>{{ report_summary.password_not_compatible }}</td></tr>
+<tr><td>Falhas parciais</td><td>{{ report_summary.partial_failures }}</td></tr>
+<tr><td>Falhas no AD</td><td>{{ report_summary.ad_failures }}</td></tr>
+<tr><td>Secrets atualizados</td><td>{{ report_summary.secrets_updated }}</td></tr>
+</table>
+
+<h3>Detalhamento</h3>
+<table class="report">
+<thead>
+<tr>
+<th>Usuário</th>
+<th>Ambiente</th>
+<th>Cluster</th>
+<th>Namespace</th>
+<th>Secret</th>
+<th>Dias restantes</th>
+<th>Status</th>
+<th>Detalhe</th>
+</tr>
+</thead>
+<tbody>
+{% for row in report_rows | sort(attribute='username') | sort(attribute='cluster') %}
+{% set css = 'updated' if row.status == 'UPDATED' else 'failed' if row.status in ['SECRET_UPDATE_FAILED','AD_CHANGE_FAILED','PASSWORD_NOT_COMPATIBLE','PASSWORD_EXPIRED','CLUSTER_ACCESS_FAILED','SECRET_DISCOVERY_FAILED','AD_LOOKUP_FAILED'] else 'warning' if row.status == 'PASSWORD_NEVER_EXPIRES' else 'neutral' %}
+<tr class="{{ css }}">
+<td>{{ row.username }}</td>
+<td>{{ row.environment | default('N/A') }}</td>
+<td>{{ row.cluster }}</td>
+<td>{{ row.namespace }}</td>
+<td>{{ row.secret }}</td>
+<td>{{ row.days_remaining }}</td>
+<td>{% if row.status == 'UPDATED' %}<strong>ATUALIZADO</strong>{% elif row.status == 'PASSWORD_EXPIRED' %}<strong>SENHA EXPIRADA</strong>{% elif row.status == 'PASSWORD_NEVER_EXPIRES' %}<strong>NUNCA EXPIRA</strong>{% elif row.status == 'PASSWORD_NOT_COMPATIBLE' %}<strong>SENHA NÃO COMPATÍVEL</strong>{% elif row.status == 'NOT_DUE' %}NÃO ALTERADO{% elif row.status == 'SECRET_UPDATE_FAILED' %}<strong>FALHA</strong>{% elif row.status == 'AD_CHANGE_FAILED' %}<strong>FALHA AD</strong>{% elif row.status == 'CLUSTER_ACCESS_FAILED' %}<strong>FALHA CLUSTER</strong>{% elif row.status == 'SECRET_DISCOVERY_FAILED' %}<strong>FALHA DISCOVERY</strong>{% elif row.status == 'AD_LOOKUP_FAILED' %}<strong>FALHA AD</strong>{% else %}{{ row.status }}{% endif %}</td>
+<td>{{ row.detail | default('') }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+
+<p><strong>Observação:</strong> restart_deployments={{ restart_deployments }}. Nesta V1 nenhum Deployment/Pod é reiniciado.</p>
+</body>
+</html>
