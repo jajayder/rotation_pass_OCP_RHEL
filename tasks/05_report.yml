@@ -35,5 +35,5 @@
     subtype: html
     body: "{{ report_html }}"
 #  delegate_to: localhost
-vars:
-  ansible_python_interpreter: /usr/bin/python3.12
+  vars:
+    ansible_python_interpreter: /usr/bin/python3.12
