@@ -1,6 +1,40 @@
 ---
 # O script fica no projeto (EE do AAP). Copiamos para um diretorio temporario
 # privado no bastion RHEL, onde roda com openldap-clients + python3 (sem pwsh).
+# O ansible-core do EE exige Python >= 3.8 no host remoto; o /usr/bin/python3 do
+# RHEL 8 e 3.6 (o modulo falha com traceback no AnsiballZ). O raw nao usa Python:
+# detecta o melhor interpretador disponivel e passa a usa-lo neste host.
+- name: Detectar Python compativel no bastion
+  ansible.builtin.raw: |
+    escolhido=""
+    for p in {{ bastion_python_candidates | join(' ') }}; do
+      [ -x "$p" ] || continue
+      v=$("$p" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null) || continue
+      echo "encontrado: $p ($v)"
+      if [ -z "$escolhido" ] && "$p" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null; then
+        escolhido="$p"
+      fi
+    done
+    echo "PY=${escolhido:-NONE}"
+  register: bastion_python_probe
+  changed_when: false
+
+- name: Usar o Python detectado no bastion
+  ansible.builtin.set_fact:
+    ansible_python_interpreter: "{{ bastion_python_probe.stdout | regex_search('PY=(\\S+)', '\\1') | first }}"
+  when: "'PY=NONE' not in bastion_python_probe.stdout"
+
+- name: Falhar se nao houver Python >= 3.8 no bastion
+  ansible.builtin.fail:
+    msg: >-
+      Nenhum Python >= 3.8 no bastion ({{ bastion_python_probe.stdout_lines | select('match', 'encontrado') | join('; ') }}).
+      Instale um (ex.: dnf install python3.12) ou ajuste bastion_python_candidates.
+  when: "'PY=NONE' in bastion_python_probe.stdout"
+
+- name: Python em uso no bastion
+  ansible.builtin.debug:
+    msg: "{{ bastion_python_probe.stdout_lines | select('match', 'encontrado') | list + ['em uso: ' ~ ansible_python_interpreter] }}"
+
 - name: Verificar ferramentas LDAP no bastion (openldap-clients / python3)
   ansible.builtin.shell: |
     faltando=""

@@ -45,6 +45,15 @@ ldap_timeout: 20
 ldap_bind_user: "{{ ad_user | default('') }}"
 ldap_bind_password: "{{ ad_pass | default('') }}"
 
+# Interpretadores testados no bastion, em ordem de preferencia (o primeiro >= 3.8
+# e usado pelos modulos do Ansible; o /usr/bin/python3 do RHEL 8 e 3.6).
+bastion_python_candidates:
+  - /usr/bin/python3.12
+  - /usr/bin/python3.11
+  - /usr/bin/python3.9
+  - /usr/bin/python3.8
+  - /usr/bin/python3
+
 # Chave temporaria no Secret com a senha nova durante a troca. Garante que a
 # senha nova nunca se perde se o job cair entre a troca no AD e o patch do Secret.
 secret_pending_key: "password-pendente"
@@ -103,4 +112,6 @@ mail_subject_prefix: "Atualização de credenciais"
 mail_require_confirmation: true
 # O envio sai do bastion (SMTP liberado a partir dele).
 mail_python_interpreter: /usr/bin/python3.12
+# Obs.: o Python detectado em bastion_python_candidates tem precedencia (set_fact);
+# com /usr/bin/python3.12 presente no bastion, e o mesmo interpretador.
 report_timezone: "America/Sao_Paulo"
