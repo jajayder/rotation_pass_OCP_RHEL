@@ -1,24 +1,34 @@
 ---
 - name: Anexar erros de infraestrutura OCP ao relatorio
   ansible.builtin.set_fact:
-    report_rows: "{{ report_rows + [ item ] }}"
-  loop: "{{ ocp_cluster_errors }}"
+    report_rows: "{{ report_rows + ocp_cluster_errors }}"
 
 - name: Calcular resumo da execucao
+  vars:
+    users_with: "{{ report_rows | rejectattr('username', 'equalto', 'N/A') | list }}"
   ansible.builtin.set_fact:
-    report_updated_users: "{{ report_rows | selectattr('status', 'equalto', 'UPDATED') | map(attribute='username') | unique | list }}"
+    report_manual_statuses:
+      - PASSWORD_EXPIRED
+      - PASSWORD_CANT_CHANGE
+      - PASSWORD_NOT_COMPATIBLE
+      - AD_ACCOUNT_LOCKED
+      - AD_ACCOUNT_DISABLED
+      - AD_CHANGE_FAILED
+      - AD_LOOKUP_FAILED
+      - SECRET_UPDATE_FAILED
     report_summary:
       clusters_count: "{{ ocp_clusters | length }}"
-      cluster_names: "{{ ocp_clusters | map(attribute='name') | list }}"
+      clusters_ok: "{{ cluster_status | selectattr('status', 'equalto', 'OK') | list | length }}"
       users_found: "{{ unique_aplic_users | length }}"
-      users_updated: "{{ report_rows | selectattr('status', 'equalto', 'UPDATED') | map(attribute='username') | unique | list | length }}"
-      password_expired: "{{ report_rows | selectattr('status', 'equalto', 'PASSWORD_EXPIRED') | map(attribute='username') | unique | list | length }}"
-      never_expires: "{{ report_rows | selectattr('status', 'equalto', 'PASSWORD_NEVER_EXPIRES') | map(attribute='username') | unique | list | length }}"
-      not_due: "{{ report_rows | selectattr('status', 'equalto', 'NOT_DUE') | map(attribute='username') | unique | list | length }}"
-      password_not_compatible: "{{ report_rows | selectattr('status', 'equalto', 'PASSWORD_NOT_COMPATIBLE') | map(attribute='username') | unique | list | length }}"
-      partial_failures: "{{ report_rows | selectattr('status', 'equalto', 'SECRET_UPDATE_FAILED') | map(attribute='username') | unique | list | length }}"
-      ad_failures: "{{ report_rows | selectattr('status', 'equalto', 'AD_CHANGE_FAILED') | map(attribute='username') | unique | list | length }}"
-      secrets_updated: "{{ secrets_updated_count }}"
+      secrets_found: "{{ secret_inventory | length }}"
+      users_updated: "{{ users_with | selectattr('status', 'equalto', 'UPDATED') | map(attribute='username') | unique | list | length }}"
+      secrets_updated: "{{ secrets_updated_count | int }}"
+      password_expired: "{{ users_with | selectattr('status', 'equalto', 'PASSWORD_EXPIRED') | map(attribute='username') | unique | list | length }}"
+      cant_change: "{{ users_with | selectattr('status', 'equalto', 'PASSWORD_CANT_CHANGE') | map(attribute='username') | unique | list | length }}"
+      not_compatible: "{{ users_with | selectattr('status', 'equalto', 'PASSWORD_NOT_COMPATIBLE') | map(attribute='username') | unique | list | length }}"
+      never_expires: "{{ users_with | selectattr('status', 'equalto', 'PASSWORD_NEVER_EXPIRES') | map(attribute='username') | unique | list | length }}"
+      not_due: "{{ users_with | selectattr('status', 'equalto', 'NOT_DUE') | map(attribute='username') | unique | list | length }}"
+      failures: "{{ users_with | selectattr('status', 'in', ['AD_ACCOUNT_LOCKED', 'AD_ACCOUNT_DISABLED', 'AD_CHANGE_FAILED', 'AD_LOOKUP_FAILED', 'SECRET_UPDATE_FAILED']) | map(attribute='username') | unique | list | length }}"
 
 - name: Gerar corpo HTML do e-mail
   ansible.builtin.set_fact:
@@ -31,9 +41,13 @@
     from: "{{ mail_from }}"
     to: "{{ mail_to }}"
     cc: "{{ mail_cc }}"
-    subject: "{{ mail_subject_prefix }} - {{ ansible_date_time.date | default(lookup('pipe', 'date +%Y-%m-%d')) }}"
+    subject: >-
+      {{ mail_subject_prefix }} - {{ run_date }}
+      {%- set manual = report_rows | selectattr('status', 'in', report_manual_statuses) | list | length -%}
+      {{ ' - ACAO MANUAL NECESSARIA' if manual > 0 else '' }}
     subtype: html
+    charset: utf-8
     body: "{{ report_html }}"
-#  delegate_to: localhost
+  # O envio sai do bastion (SMTP liberado a partir dele).
   vars:
-    ansible_python_interpreter: /usr/bin/python3.12
+    ansible_python_interpreter: "{{ mail_python_interpreter }}"

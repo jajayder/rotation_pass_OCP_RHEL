@@ -1,0 +1,95 @@
+---
+# Os .ps1 ficam no projeto (EE do AAP). Copiamos para um diretorio temporario
+# no bastion, onde o pwsh roda.
+- name: Verificar pwsh no bastion
+  ansible.builtin.command:
+    argv: ["{{ pwsh_bin }}", "-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()"]
+  register: pwsh_version
+  changed_when: false
+
+- name: Criar diretorio temporario para os scripts
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: aplic_rotation_
+  register: remote_ps_dir
+
+- name: Copiar scripts PowerShell para o bastion
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/files/{{ item }}"
+    dest: "{{ remote_ps_dir.path }}/{{ item }}"
+    mode: "0600"
+  loop:
+    - ad_get_user_expiry.ps1
+    - ad_validate_password.ps1
+    - ad_change_password.ps1
+
+# O .NET (pwsh 7.4/7.5) procura 'libldap-2.5.so.0', mas o RHEL 9 traz OpenLDAP 2.6
+# ('libldap.so.2'). Sem root: criamos o symlink no diretorio temporario e apontamos
+# LD_LIBRARY_PATH para ele. Se a lib 2.5 ja existir no sistema, nada e feito.
+- name: Localizar libldap no bastion
+  ansible.builtin.shell: |
+    set -o pipefail
+    if /sbin/ldconfig -p | grep -q 'libldap-2.5.so.0 '; then echo SYSTEM; exit 0; fi
+    for c in /usr/lib64/libldap.so.2 /usr/lib64/libldap-2.4.so.2 /usr/lib/x86_64-linux-gnu/libldap.so.2; do
+      if [ -e "$c" ]; then echo "$c"; exit 0; fi
+    done
+    echo MISSING
+  args:
+    executable: /bin/bash
+  register: libldap_probe
+  changed_when: false
+
+- name: Falhar se nao houver OpenLDAP no bastion
+  ansible.builtin.fail:
+    msg: "libldap nao encontrada no bastion. Instale o pacote 'openldap' (dnf install openldap)."
+  when: libldap_probe.stdout == 'MISSING'
+
+- name: Criar diretorio de compatibilidade da libldap
+  ansible.builtin.file:
+    path: "{{ remote_ps_dir.path }}/lib"
+    state: directory
+    mode: "0700"
+  when: libldap_probe.stdout not in ['SYSTEM', 'MISSING']
+
+- name: Criar symlink libldap-2.5.so.0 para a libldap do sistema
+  ansible.builtin.file:
+    src: "{{ libldap_probe.stdout }}"
+    dest: "{{ remote_ps_dir.path }}/lib/libldap-2.5.so.0"
+    state: link
+  when: libldap_probe.stdout not in ['SYSTEM', 'MISSING']
+
+- name: Definir parametros comuns dos scripts
+  ansible.builtin.set_fact:
+    ps_dir: "{{ remote_ps_dir.path }}"
+    ps_common_args:
+      - "-Domain"
+      - "{{ ad_domain }}"
+      - "-Server"
+      - "{{ ldap_server }}"
+      - "-Port"
+      - "{{ ldap_port | string }}"
+      - "-UseSsl"
+      - "{{ ldap_use_ssl | bool | ternary('true', 'false') }}"
+      - "-ValidateCerts"
+      - "{{ ldap_validate_certs | bool | ternary('true', 'false') }}"
+    # libldap (usada pelo .NET no Linux) controla a validacao do certificado LDAPS.
+    ps_env: >-
+      {{ {'LDAPTLS_REQCERT': (ldap_validate_certs | bool | ternary('demand', 'never'))}
+         | combine({'LD_LIBRARY_PATH': remote_ps_dir.path ~ '/lib'}
+                   if libldap_probe.stdout not in ['SYSTEM', 'MISSING'] else {}) }}
+
+# Teste rapido: o .NET consegue carregar a libldap? (sem rede, so o carregamento)
+- name: Verificar carregamento do LDAP no pwsh
+  ansible.builtin.command:
+    argv:
+      - "{{ pwsh_bin }}"
+      - "-NoProfile"
+      - "-NonInteractive"
+      - "-Command"
+      - >-
+        Add-Type -AssemblyName System.DirectoryServices.Protocols;
+        $c = New-Object System.DirectoryServices.Protocols.LdapConnection('localhost'); $c.Dispose(); 'LDAP_OK'
+  environment: "{{ ps_env }}"
+  register: ldap_load_check
+  changed_when: false
+  failed_when: "'LDAP_OK' not in ldap_load_check.stdout"

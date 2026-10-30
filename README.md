@@ -1,107 +1,123 @@
-# aplic-user-password-rotation (RHEL / pwsh)
+# aplic-user-password-rotation (AAP 2.7 / RHEL / pwsh)
 
-Versão da automação que roda os scripts `.ps1` no **RHEL via `pwsh`** (PowerShell Core),
-usando o bastion **OCBASTIOCPD2** no lugar do antigo host Windows `10.83.103.61`.
+Automação de rotação das senhas dos `aplic-user-*` usados em Secrets dos clusters OpenShift.
 
-Descobre `aplic-user-*` em Secrets Opaque dos clusters OpenShift DEV/HMG, consulta a
-expiração no AD, troca as senhas usando a senha atual capturada e atualiza somente
-`data.password` de todos os Secrets do mesmo usuário.
+## Fluxo
 
-## O que muda em relação à versão Windows/WinRM
+1. **Prepara o bastion RHEL (OCBASTIOCPD2)**: copia os `.ps1` para um diretório temporário,
+   confere o `pwsh` e se o .NET consegue carregar a `libldap` (ver "Pré-requisitos").
+2. **Tokens dos clusters**: lê a credencial do AAP com os tokens e associa cada token ao
+   cluster pelo `label` definido em `vars/clusters.yml`. Cluster sem token entra no relatório.
+3. **Descoberta**: lista todos os Secrets `Opaque` de todos os namespaces que tenham as chaves
+   `username` e `password` com usuário começando por `aplic-user-`. O mesmo usuário pode
+   aparecer em vários Secrets/clusters e é processado uma única vez.
+4. **Consulta no AD** (bind de leitura com `ad_user`/`ad_pass`): data de expiração da senha e
+   se a opção *"O usuário não pode alterar a senha"* está ativa.
+5. **Regra**:
 
-No RHEL, com `pwsh`, **não existem** o módulo `ActiveDirectory` (`Get-ADUser`) nem o
-namespace `System.DirectoryServices.AccountManagement` (`ValidateCredentials` /
-`ChangePassword`) — ambos são Windows-only. Por isso:
+   | Situação no AD | Ação |
+   |---|---|
+   | senha expirada | não altera, **alerta para troca manual** |
+   | vence em 0..10 dias | **troca automática** |
+   | vence em mais de 10 dias | não altera |
+   | "nunca expira" / conta desabilitada | não altera, informa |
+   | vence em até 10 dias, mas o usuário **não pode trocar a senha** | não altera, **alerta para troca manual** |
 
-- Os três `.ps1` foram reescritos sobre **LDAP** usando
-  `System.DirectoryServices.Protocols`, que é cross-platform:
-  - `ad_get_user_expiry.ps1` → busca LDAP de `msDS-UserPasswordExpiryTimeComputed` e
-    `userAccountControl` (mesma regra de dias / never-expires / disabled).
-  - `ad_validate_password.ps1` → bind LDAP como o próprio usuário com a senha candidata.
-  - `ad_change_password.ps1` → `modify` de `unicodePwd` (delete antiga + add nova) sobre
-    **LDAPS**, após bind com a senha antiga (troca self-service, não reset).
-- `ansible.windows.win_powershell` foi trocado por `ansible.builtin.command: pwsh -File ...`.
-- Os scripts devolvem **JSON** no stdout; o playbook faz `from_json`.
-- Segredos (senhas, bind do AD) vão por **variável de ambiente**, nunca no argv.
-- O inventário passou de WinRM/Kerberos para **SSH** no bastion RHEL.
+6. **Troca** (sem conta de serviço com permissão de reset): valida as senhas encontradas
+   nos Secrets fazendo bind como o próprio usuário. Com a senha válida, faz a **troca
+   self-service** (`unicodePwd` delete antiga + add nova, via LDAPS). Se o AD negar a troca
+   (`insufficientAccessRights`), o status é *USUÁRIO NÃO PODE TROCAR A SENHA*.
+7. **Secrets**: após a troca no AD, atualiza somente `data.password` de **todos** os Secrets
+   daquele usuário (JSON Patch, com 3 tentativas).
+8. **E-mail**: clusters consultados, usuários encontrados e onde estão, usuários alterados e
+   a lista de **ação manual** (expiradas, não pode trocar, senha não confere, bloqueio, falhas).
+   O assunto ganha `- ACAO MANUAL NECESSARIA` quando há pendências.
 
-## Requisitos
+## Credenciais no AAP
 
-- AAP com Execution Environment contendo:
-  - `kubernetes.core`, `community.okd`, `community.general`
-  - Python Kubernetes client
-- Bastion **OCBASTIOCPD2** (RHEL) com:
-  - `pwsh` instalado (PowerShell 7+). Confirme o caminho em `pwsh_bin` (padrão `/usr/bin/pwsh`).
-  - Acesso de rede ao AD via **LDAPS (porta 636)** — obrigatório para a troca de senha.
-- Credencial **Machine** do AAP (SSH) para o OCBASTIOCPD2.
-- Conta de serviço LDAP de **leitura** no AD para a consulta de expiração.
-- SMTP acessível pelo Execution Environment.
+| Variável | Origem | Uso |
+|---|---|---|
+| `ad_user` / `ad_pass` | credencial do AAP | SSH no bastion RHEL **e** bind LDAP de leitura no AD |
+| `ocp_tokens` | credencial do AAP (tipo customizado) | tokens dos clusters, por label |
 
-## Survey / credenciais
-
-Além do OCP, forneça a conta de serviço LDAP de leitura (não versione no Git):
-
-```yaml
-ocp_user: string
-ocp_pass: string (senha)
-ad_read_user: string            # ex.: svc-ldap-read@scl.corp
-ad_read_pass: string (senha)
-```
-
-`ad_read_user`/`ad_read_pass` alimentam `ldap_bind_user`/`ldap_bind_password` em
-`group_vars/vars.yml`. Validar e trocar senha usam a própria senha do usuário, não essa conta.
-
-## Conexão LDAP (`group_vars/vars.yml`)
+Formatos aceitos para `ocp_tokens` (objeto, lista ou o mesmo em texto JSON/YAML):
 
 ```yaml
-ldap_server: "{{ ad_domain }}"   # FQDN de um DC ou o domínio (round-robin). Ex.: dc01.scl.corp
-ldap_port: 636
-ldap_use_ssl: true
-ldap_validate_certs: false       # true + CA do AD no trust do RHEL para validar o certificado
+ocp_tokens: {"OCPD2": "sha256~...", "OCPH2": "sha256~..."}
+# ou
+ocp_tokens: [{"label": "OCPD2", "token": "sha256~..."}, {"label": "OCPH2", "token": "sha256~..."}]
 ```
 
-## Regra de rotação
+Se a credencial usar outro nome de variável, ajuste `ocp_tokens_var` em `group_vars/vars.yml`.
+Os tokens **não são revogados** ao final da execução (são da credencial, e revogar quebraria
+as próximas execuções).
 
-- `0..10` dias: troca automática.
-- `< 0`: senha expirada, somente alerta.
-- `> 10`: não altera.
-- `PasswordNeverExpires=True` (ou conta desabilitada): ignora e alerta.
-- Nenhuma senha dos Secrets válida no AD: `SENHA NÃO COMPATÍVEL`.
+Exemplo de *Credential Type* customizado:
 
-## Observação OpenShift
+```yaml
+# Input configuration
+fields:
+  - id: ocp_tokens
+    type: string
+    label: Tokens OCP (JSON {"LABEL": "token"})
+    secret: true
+    multiline: true
+required: [ocp_tokens]
 
-OpenShift usa OAuth2, então o projeto usa `community.okd.openshift_auth` para transformar
-usuário/senha do Survey em token e usa esse token nas operações `kubernetes.core`.
-As tarefas de OCP continuam com `delegate_to: localhost` (rodam no EE); apenas as tarefas
-de AD rodam no bastion RHEL via `pwsh`.
+# Injector configuration
+extra_vars:
+  ocp_tokens: '{{ ocp_tokens }}'
+```
+
+O token precisa permitir `list` de Secrets em todos os namespaces e `patch` nos Secrets.
+
+## Pré-requisitos no bastion OCBASTIOCPD2
+
+- `pwsh` 7.4+ (`pwsh_bin`, padrão `/usr/bin/pwsh`).
+- Pacote `openldap` (libldap). O .NET do pwsh procura `libldap-2.5.so.0`, mas o RHEL 9
+  traz `libldap.so.2`. **O playbook resolve isso sozinho e sem root**: cria o symlink no
+  diretório temporário e usa `LD_LIBRARY_PATH`. A task "Verificar carregamento do LDAP no
+  pwsh" falha cedo se isso não funcionar.
+- Acesso ao AD via **LDAPS (636)**, obrigatório para a troca de senha.
+- Acesso SMTP a partir do bastion (o e-mail sai dele) e `python3.12` (`mail_python_interpreter`).
+
+No Linux, a validação do certificado LDAPS é controlada pela `libldap`:
+`ldap_validate_certs: false` → `LDAPTLS_REQCERT=never`; `true` → exige a CA do AD no trust do
+RHEL (`/etc/pki/ca-trust/source/anchors` + `update-ca-trust`).
 
 ## Segurança
 
-Tarefas que manipulam senhas/tokens usam `no_log: true`. As senhas trafegam por variável de
-ambiente para os scripts, fora da linha de comando. O relatório nunca contém senha.
+- Senhas vão para os scripts por **STDIN** (dentro do payload do módulo, coberto por
+  `no_log`), nunca no argv nem em variáveis de ambiente.
+- Para proteger contra bloqueio de conta, são testadas no máximo `max_password_candidates`
+  (padrão 3) senhas distintas por usuário, das mais repetidas nos Secrets para as menos
+  repetidas, parando na primeira válida.
+- O relatório nunca contém senha. `rotation_debug: true` mostra o retorno dos scripts
+  (status/erros, sem senhas).
 
-## Execução
+## Atenção: `SECRET_UPDATE_FAILED`
+
+Se a senha foi trocada no AD e algum Secret falhou ao atualizar (mesmo após 3 tentativas), o
+relatório marca **FALHA AO ATUALIZAR SECRET**. A nova senha só existe na execução, então a
+correção é manual: redefinir a senha do usuário e atualizar o(s) Secret(s).
+
+## Teste manual dos scripts no bastion
 
 ```bash
-ansible-galaxy collection install -r requirements.yml
+mkdir -p /tmp/ldapcompat && ln -sf /usr/lib64/libldap.so.2 /tmp/ldapcompat/libldap-2.5.so.0
+export LD_LIBRARY_PATH=/tmp/ldapcompat LDAPTLS_REQCERT=never
+
+echo '{"bind_user":"SEU_USUARIO","bind_password":"***"}' | \
+  pwsh -NoProfile -File files/ad_get_user_expiry.ps1 \
+    -Username aplic-user-exemplo -Domain scl.corp -Server scl.corp -Port 636
+```
+
+Saída esperada: uma linha JSON com `status`, `days_remaining`, `expiration_date` e `can_change`.
+
+## Execução fora do AAP
+
+```bash
+ansible-galaxy collection install kubernetes.core community.okd community.general
 ansible-playbook -i inventory/hosts.yml site.yml \
-  -e ocp_user=... -e ocp_pass=... -e ad_read_user=... -e ad_read_pass=...
+  -e ad_user=... -e ad_pass=... -e '{"ocp_tokens": {"OCPD2": "sha256~...", "OCPH2": "sha256~..."}}'
 ```
-
-No AAP: aponte o Job Template para o projeto, use o Survey para `ocp_user`/`ocp_pass` e a
-conta LDAP de leitura (`ad_read_user`/`ad_read_pass`), e anexe a credencial Machine (SSH)
-do OCBASTIOCPD2.
-
-## Teste rápido dos scripts no bastion
-
-Dá para validar cada `.ps1` direto no OCBASTIOCPD2 (sem o Ansible):
-
-```bash
-export AD_BIND_USER='svc-ldap-read@scl.corp'
-export AD_BIND_PASSWORD='***'
-pwsh -NoProfile -File files/ad_get_user_expiry.ps1 \
-  -Username aplic-user-exemplo -Domain scl.corp -Server dc01.scl.corp \
-  -Port 636 -UseSsl true -ValidateCerts false
-```
-
-Deve imprimir uma linha JSON com `status`, `days_remaining` e `expiration_date`.

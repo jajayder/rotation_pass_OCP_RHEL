@@ -13,7 +13,7 @@
 
 - name: Registrar falha de descoberta do cluster
   ansible.builtin.set_fact:
-    ocp_cluster_errors: "{{ ocp_cluster_errors + [ {
+    ocp_cluster_errors: "{{ ocp_cluster_errors + [{
       'username': 'N/A',
       'cluster': ocp_session.cluster.name,
       'environment': ocp_session.cluster.environment,
@@ -21,20 +21,26 @@
       'secret': 'N/A',
       'days_remaining': 'N/A',
       'status': 'SECRET_DISCOVERY_FAILED',
-      'detail': (cluster_secrets.msg | default('Falha ao listar Secrets')) | string
-    } ] }}"
-  when: cluster_secrets.failed | default(false)
+      'detail': (cluster_secrets.msg | default('Falha ao listar Secrets (token invalido/expirado ou sem permissao)')) | string
+    }] }}"
+    cluster_status: "{{ cluster_status + [{
+      'name': ocp_session.cluster.name,
+      'environment': ocp_session.cluster.environment,
+      'status': 'FALHA_ACESSO',
+      'secrets_found': 0
+    }] }}"
+  when: (cluster_secrets.failed | default(false)) or (cluster_secrets.resources is not defined)
 
 - name: Adicionar Secrets elegiveis ao inventario global
   ansible.builtin.set_fact:
-    secret_inventory: "{{ secret_inventory + [ {
-      'username': (secret_item.data.username | b64decode),
+    secret_inventory: "{{ secret_inventory + [{
+      'username': (secret_item.data.username | b64decode | trim | lower),
       'password': (secret_item.data.password | b64decode),
       'cluster': ocp_session.cluster.name,
       'environment': ocp_session.cluster.environment,
       'namespace': secret_item.metadata.namespace,
       'secret': secret_item.metadata.name
-    } ] }}"
+    }] }}"
   loop: "{{ cluster_secrets.resources | default([]) }}"
   loop_control:
     loop_var: secret_item
@@ -45,11 +51,15 @@
     - secret_item.data is defined
     - secret_item.data.username is defined
     - secret_item.data.password is defined
-    - (secret_item.data.username | b64decode) is string
-    - (secret_item.data.username | b64decode) | lower is match('^' ~ aplic_user_prefix | lower)
+    - (secret_item.data.username | b64decode | trim | lower).startswith(aplic_user_prefix | lower)
   no_log: true
 
-- name: Construir lista unica de aplic-users
+- name: Registrar status do cluster consultado
   ansible.builtin.set_fact:
-    unique_aplic_users: "{{ secret_inventory | map(attribute='username') | unique | list }}"
-  no_log: true
+    cluster_status: "{{ cluster_status + [{
+      'name': ocp_session.cluster.name,
+      'environment': ocp_session.cluster.environment,
+      'status': 'OK',
+      'secrets_found': (secret_inventory | selectattr('cluster', 'equalto', ocp_session.cluster.name) | list | length)
+    }] }}"
+  when: not ((cluster_secrets.failed | default(false)) or (cluster_secrets.resources is not defined))

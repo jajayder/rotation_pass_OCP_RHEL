@@ -1,42 +1,67 @@
 ---
+# ---------------------------------------------------------------------------
+# Credenciais que chegam do AAP (NAO versionar valores aqui)
+# ---------------------------------------------------------------------------
+#   ad_user / ad_pass  -> credencial do AAP. Usada para:
+#                         * SSH no bastion RHEL (ver inventory/hosts.yml)
+#                         * bind LDAP de leitura (consulta de expiracao)
+#   ocp_tokens         -> credencial do AAP com os tokens dos clusters OCP,
+#                         indexados pelo "label" de cada cluster em vars/clusters.yml.
+#                         Formatos aceitos (dict, lista ou o mesmo em texto JSON/YAML):
+#                           {"OCPD2": "sha256~...", "OCPH2": "sha256~..."}
+#                           [{"label": "OCPD2", "token": "sha256~..."}, ...]
+# Nome da variavel que traz os tokens (caso a credencial use outro nome).
+ocp_tokens_var: "ocp_tokens"
+
 # Dominio AD
 ad_domain: "scl.corp"
 
-# Bastion RHEL que possui acesso ao AD e roda os .ps1 via pwsh
-# (substitui o antigo host Windows 10.83.103.61).
+# Bastion RHEL que roda os .ps1 via pwsh e fala LDAP com o AD.
 ad_server: "OCBASTIOCPD2"
 
 # ---------------------------------------------------------------------------
 # Conexao LDAP com o AD a partir do bastion RHEL (pwsh / S.DS.Protocols)
 # ---------------------------------------------------------------------------
-# Servidor LDAP: FQDN de um Domain Controller ou o proprio dominio
-# (DNS round-robin entre os DCs). Ex.: "dc01.scl.corp".
+# FQDN de um Domain Controller ou o proprio dominio (round-robin). Ex.: "dc01.scl.corp".
 ldap_server: "{{ ad_domain }}"
 # LDAPS e obrigatorio para a troca de senha (unicodePwd).
 ldap_port: 636
 ldap_use_ssl: true
-# Mantido como false para seguir a mesma postura do ocp_validate_certs.
-# Defina true e publique a CA do AD no trust do RHEL para validar o certificado.
+# false = nao valida o certificado do DC (LDAPTLS_REQCERT=never no RHEL).
+# true  = valida (publique a CA do AD no trust do RHEL: update-ca-trust).
 ldap_validate_certs: false
 
-# Conta de servico de LEITURA no AD (bind para consultar expiracao).
-# Forneca via Survey/credencial do AAP (extra vars), NAO versione no Git.
-# Validar e trocar senha usam a propria senha do usuario, nao esta conta.
-ldap_bind_user: "{{ ad_read_user | default('') }}"      # ex.: svc-ldap-read@scl.corp
-ldap_bind_password: "{{ ad_read_pass | default('') }}"
+# Bind de LEITURA no AD = a propria credencial ad_user/ad_pass do AAP.
+# Validar e trocar senha usam a senha do proprio aplic-user, nao esta conta.
+ldap_bind_user: "{{ ad_user | default('') }}"
+ldap_bind_password: "{{ ad_pass | default('') }}"
 
-# Binario do PowerShell (PowerShell Core) no RHEL.
+# PowerShell Core no RHEL.
 pwsh_bin: "/usr/bin/pwsh"
 
+# ---------------------------------------------------------------------------
 # Regras de rotacao
+# ---------------------------------------------------------------------------
+#  dias < 0                      -> PASSWORD_EXPIRED (alerta, troca manual)
+#  min_days <= dias <= max_days  -> troca automatica
+#  dias > max_days               -> nao altera
 password_rotation_min_days: 0
 password_rotation_max_days: 10
-password_min_length: 12
+password_min_length: 16
 password_max_length: 20
 password_special_chars: '!@#%^&*_-+='
 
+# Quantas senhas DIFERENTES dos Secrets podem ser testadas por usuario.
+# Cada senha errada conta como tentativa invalida no AD (risco de bloqueio da conta).
+# As senhas mais repetidas entre os Secrets sao testadas primeiro, e o teste para
+# na primeira valida.
+max_password_candidates: 3
+
 # V1: nao reinicia workloads.
 restart_deployments: false
+
+# Exibe stdout/stderr dos scripts (nunca senhas) para depuracao.
+rotation_debug: false
 
 # OCP
 ocp_validate_certs: false
@@ -44,7 +69,9 @@ ocp_validate_certs: false
 # Prefixo dos usuarios elegiveis
 aplic_user_prefix: "aplic-user-"
 
+# ---------------------------------------------------------------------------
 # E-mail
+# ---------------------------------------------------------------------------
 mail_host: "mail.energisa.com.br"
 mail_port: 25
 mail_from: "iac-infra@energisa.com.br"
@@ -60,3 +87,6 @@ mail_to:
   # - phenrique.ccosta@energisaterceiros.com.br
 mail_cc: []
 mail_subject_prefix: "Atualização de credenciais"
+# O envio sai do bastion (SMTP liberado a partir dele).
+mail_python_interpreter: /usr/bin/python3.12
+report_timezone: "America/Sao_Paulo"

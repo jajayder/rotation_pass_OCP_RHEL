@@ -1,44 +1,51 @@
 ---
-- name: Autenticar no OpenShift
-  community.okd.openshift_auth:
-    host: "{{ cluster.api_url }}"
-    username: "{{ ad_user }}" #"{{ username }}"
-    password: "{{ ad_pass }}" #"{{ password }}"
-    validate_certs: "{{ ocp_validate_certs }}"
-    state: present
+# Os tokens chegam por uma credencial do AAP (variavel definida em ocp_tokens_var)
+# e sao associados a cada cluster pelo "label" de vars/clusters.yml.
+- name: Normalizar tokens recebidos da credencial do AAP
+  ansible.builtin.set_fact:
+    ocp_tokens_parsed: >-
+      {%- set raw = lookup('ansible.builtin.vars', ocp_tokens_var) -%}
+      {{ (raw | from_yaml) if (raw is string) else raw }}
+  no_log: true
+
+- name: Montar mapa label -> token
+  ansible.builtin.set_fact:
+    ocp_token_map: >-
+      {{ ocp_tokens_parsed
+         if (ocp_tokens_parsed is mapping)
+         else (ocp_tokens_parsed | items2dict(key_name='label', value_name='token')) }}
+  no_log: true
+
+- name: Registrar sessoes dos clusters com token
+  ansible.builtin.set_fact:
+    ocp_sessions: "{{ ocp_sessions + [{'cluster': cluster, 'api_key': ocp_token_map[cluster.label | default(cluster.name)]}] }}"
   loop: "{{ ocp_clusters }}"
   loop_control:
     loop_var: cluster
     label: "{{ cluster.name }} ({{ cluster.environment }})"
-  register: ocp_auth_results
-  delegate_to: localhost
-  no_log: true
-  failed_when: false
-
-- name: Registrar sessoes OCP que autenticaram
-  ansible.builtin.set_fact:
-    ocp_sessions: "{{ ocp_sessions + [ {'cluster': item.cluster, 'api_key': item.openshift_auth.api_key} ] }}"
-  loop: "{{ ocp_auth_results.results }}"
-  loop_control:
-    label: "{{ item.cluster.name }}"
-  when:
-    - item.openshift_auth is defined
-    - item.openshift_auth.api_key is defined
+  when: (ocp_token_map[cluster.label | default(cluster.name)] | default('') | string | length) > 0
   no_log: true
 
-- name: Registrar falhas de autenticacao OCP
+- name: Registrar clusters sem token na credencial
   ansible.builtin.set_fact:
-    ocp_cluster_errors: "{{ ocp_cluster_errors + [ {
+    ocp_cluster_errors: "{{ ocp_cluster_errors + [{
       'username': 'N/A',
-      'cluster': item.cluster.name,
-      'environment': item.cluster.environment,
+      'cluster': cluster.name,
+      'environment': cluster.environment,
       'namespace': 'N/A',
       'secret': 'N/A',
       'days_remaining': 'N/A',
       'status': 'CLUSTER_ACCESS_FAILED',
-      'detail': (item.msg | default('Falha de autenticacao no cluster')) | string
-    } ] }}"
-  loop: "{{ ocp_auth_results.results }}"
+      'detail': 'Token nao encontrado na credencial do AAP para o label ' ~ (cluster.label | default(cluster.name)) ~ '.'
+    }] }}"
+    cluster_status: "{{ cluster_status + [{
+      'name': cluster.name,
+      'environment': cluster.environment,
+      'status': 'TOKEN_NAO_ENCONTRADO',
+      'secrets_found': 0
+    }] }}"
+  loop: "{{ ocp_clusters }}"
   loop_control:
-    label: "{{ item.cluster.name }}"
-  when: item.openshift_auth is not defined or item.openshift_auth.api_key is not defined
+    loop_var: cluster
+    label: "{{ cluster.name }}"
+  when: (ocp_token_map[cluster.label | default(cluster.name)] | default('') | string | length) == 0

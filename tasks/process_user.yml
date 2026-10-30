@@ -1,170 +1,133 @@
 ---
-# Variaveis temporarias desta iteracao.
+# Processa UM aplic-user (current_user), que pode estar em varios Secrets/clusters.
+# Senhas sao passadas aos scripts por STDIN (dentro do payload do modulo, coberto
+# pelo no_log) - nunca no argv nem em variavel de ambiente.
+
 - name: Inicializar contexto do usuario
   ansible.builtin.set_fact:
     current_locations: "{{ secret_inventory | selectattr('username', 'equalto', current_user) | list }}"
     current_ad: {}
     current_valid_passwords: []
+    current_validation_reasons: []
+    current_stop_validation: false
     current_new_password: ''
     current_ad_status: 'UNKNOWN'
     current_ad_detail: ''
-    current_user_rotation_attempted: false
     current_user_rotation_success: false
-    current_user_secret_failures: []
+    password_change_result: {}
   no_log: true
 
-- name: Consultar AD para obter expiracao (pwsh/LDAP no bastion RHEL)
+# Senhas distintas encontradas nos Secrets, da mais repetida para a menos repetida,
+# limitadas a max_password_candidates (protecao contra bloqueio da conta no AD).
+- name: Ordenar senhas candidatas
+  ansible.builtin.set_fact:
+    current_candidates: >-
+      {%- set ns = namespace(items=[]) -%}
+      {%- set pws = current_locations | map(attribute='password') | list -%}
+      {%- for p in pws | unique -%}
+      {%- set ns.items = ns.items + [{'password': p, 'count': (pws | select('equalto', p) | list | length)}] -%}
+      {%- endfor -%}
+      {{ (ns.items | sort(attribute='count', reverse=true) | map(attribute='password') | list)[:(max_password_candidates | int)] }}
+    current_distinct_passwords: "{{ current_locations | map(attribute='password') | unique | list | length }}"
+  no_log: true
+
+- name: Consultar expiracao da senha no AD (pwsh/LDAP no bastion)
   ansible.builtin.command:
-    argv:
-      - "{{ pwsh_bin }}"
-      - "-NoProfile"
-      - "-NonInteractive"
-      - "-File"
-      - "{{ playbook_dir }}/files/ad_get_user_expiry.ps1"
-      - "-Username"
-      - "{{ current_user }}"
-      - "-Domain"
-      - "{{ ad_domain }}"
-      - "-Server"
-      - "{{ ldap_server }}"
-      - "-Port"
-      - "{{ ldap_port | string }}"
-      - "-UseSsl"
-      - "{{ ldap_use_ssl | ternary('true', 'false') }}"
-      - "-ValidateCerts"
-      - "{{ ldap_validate_certs | ternary('true', 'false') }}"
-  environment:
-    AD_BIND_USER: "{{ ldap_bind_user }}"
-    AD_BIND_PASSWORD: "{{ ldap_bind_password }}"
+    argv: >-
+      {{ [pwsh_bin, '-NoProfile', '-NonInteractive', '-File', ps_dir ~ '/ad_get_user_expiry.ps1',
+          '-Username', current_user] + ps_common_args +
+         ['-RotateMinDays', password_rotation_min_days | string,
+          '-RotateMaxDays', password_rotation_max_days | string] }}
+    stdin: "{{ {'bind_user': ldap_bind_user, 'bind_password': ldap_bind_password} | to_json }}"
+  environment: "{{ ps_env }}"
   register: ad_query_raw
   changed_when: false
   failed_when: false
-#  no_log: true
+  no_log: true
+
+- name: Debug da consulta de expiracao
+  ansible.builtin.debug:
+    msg:
+      rc: "{{ ad_query_raw.rc | default('N/A') }}"
+      stdout: "{{ ad_query_raw.stdout | default('') }}"
+      stderr: "{{ ad_query_raw.stderr | default('') }}"
+  when: rotation_debug | bool
 
 - name: Interpretar retorno da consulta de expiracao
   ansible.builtin.set_fact:
     current_ad: >-
       {{
-        (ad_query_raw.stdout | from_json)
+        (ad_query_raw.stdout | trim | split('\n') | last | from_json)
         if (ad_query_raw.stdout | default('') | trim | length > 0)
         else {
           'status': 'AD_LOOKUP_FAILED',
           'days_remaining': 'N/A',
           'expiration_date': None,
-          'error': (ad_query_raw.stderr | default('Falha ao executar o pwsh no bastion'))
+          'can_change': None,
+          'error': (ad_query_raw.stderr | default(ad_query_raw.msg | default('Falha ao executar o pwsh no bastion'), true))
         }
       }}
-  no_log: true
 
 - name: Definir status e detalhe do AD
   ansible.builtin.set_fact:
     current_ad_status: "{{ current_ad.status | default('AD_LOOKUP_FAILED') }}"
     current_ad_detail: "{{ current_ad.error | default('', true) | string }}"
-  no_log: true
 
-- name: Validar credenciais encontradas nos Secrets contra o AD
-  ansible.builtin.command:
-    argv:
-      - "{{ pwsh_bin }}"
-      - "-NoProfile"
-      - "-NonInteractive"
-      - "-File"
-      - "{{ playbook_dir }}/files/ad_validate_password.ps1"
-      - "-Username"
-      - "{{ current_user }}"
-      - "-Domain"
-      - "{{ ad_domain }}"
-      - "-Server"
-      - "{{ ldap_server }}"
-      - "-Port"
-      - "{{ ldap_port | string }}"
-      - "-UseSsl"
-      - "{{ ldap_use_ssl | ternary('true', 'false') }}"
-      - "-ValidateCerts"
-      - "{{ ldap_validate_certs | ternary('true', 'false') }}"
-  environment:
-    AD_USER_PASSWORD: "{{ candidate.password }}"
-  loop: "{{ current_locations }}"
-  loop_control:
-    loop_var: candidate
-    label: "{{ candidate.cluster }}/{{ candidate.namespace }}/{{ candidate.secret }}"
-  register: password_validation_results
-  changed_when: false
-  failed_when: false
-  no_log: true
+# "O usuario nao pode alterar a senha" detectado antes de qualquer tentativa.
+- name: Bloquear rotacao quando o usuario nao pode trocar a propria senha
+  ansible.builtin.set_fact:
+    current_ad_status: 'PASSWORD_CANT_CHANGE'
+    current_ad_detail: >-
+      Senha vence em {{ current_ad.days_remaining }} dia(s), mas o AD nao permite que o
+      proprio usuario troque a senha ({{ current_ad.can_change_detail | default('', true) }}).
+      Troca manual necessaria.
   when:
     - current_ad_status == 'ROTATE'
+    - current_ad.can_change is sameas false
 
-- name: Guardar senhas que foram validadas no AD
-  ansible.builtin.set_fact:
-    current_valid_passwords: "{{ current_valid_passwords + [ candidate_result.item.password ] }}"
-  loop: "{{ password_validation_results.results | default([]) }}"
+- name: Validar senhas dos Secrets contra o AD (para na primeira valida)
+  ansible.builtin.include_tasks: validate_candidate.yml
+  loop: "{{ current_candidates }}"
   loop_control:
-    loop_var: candidate_result
-    label: "{{ candidate_result.item.cluster | default('N/A') }}/{{ candidate_result.item.namespace | default('N/A') }}"
-  when:
-    - current_ad_status == 'ROTATE'
-    - candidate_result.stdout is defined
-    - candidate_result.stdout | default('') | trim | length > 0
-    - (candidate_result.stdout | from_json).valid | default(false) | bool
-  no_log: true
-
-- name: Remover duplicidade de senhas validas
-  ansible.builtin.set_fact:
-    current_valid_passwords: "{{ current_valid_passwords | unique }}"
+    loop_var: candidate_password
+    label: "{{ current_user }} - candidata {{ candidate_index + 1 }}/{{ current_candidates | length }}"
+    index_var: candidate_index
   when: current_ad_status == 'ROTATE'
-  no_log: true
 
-- name: Marcar senha nao compativel
+- name: Classificar falha de validacao
   ansible.builtin.set_fact:
-    current_ad_status: 'PASSWORD_NOT_COMPATIBLE'
-    current_ad_detail: 'Nenhuma senha encontrada nos Secrets foi validada com sucesso no AD.'
+    current_ad_status: >-
+      {{ 'AD_ACCOUNT_LOCKED' if ('LOCKED' in current_validation_reasons)
+         else 'AD_LOOKUP_FAILED' if ('ERROR' in current_validation_reasons and 'INVALID' not in current_validation_reasons)
+         else 'PASSWORD_NOT_COMPATIBLE' }}
+    current_ad_detail: >-
+      {{ 'Conta bloqueada no AD durante a validacao. Troca/desbloqueio manual necessario.'
+         if ('LOCKED' in current_validation_reasons)
+         else 'Erro de comunicacao com o AD ao validar as senhas dos Secrets.'
+         if ('ERROR' in current_validation_reasons and 'INVALID' not in current_validation_reasons)
+         else ('Nenhuma senha dos Secrets foi aceita pelo AD (' ~ (current_candidates | length) ~ ' de '
+               ~ current_distinct_passwords ~ ' senha(s) distinta(s) testada(s)).') }}
   when:
     - current_ad_status == 'ROTATE'
     - current_valid_passwords | length == 0
-  no_log: true
 
 - name: Gerar nova senha forte
   ansible.builtin.set_fact:
     current_new_password: >-
-      {{ lookup(
-        'community.general.random_string',
-        length=16,
-        min_lower=1,
-        min_upper=1,
-        min_numeric=1,
-        min_special=1,
-        override_special=password_special_chars,
-        similar_chars=''
-      ) }}
+      {{ lookup('community.general.random_string',
+                length=(range(password_min_length | int, password_max_length | int + 1) | random),
+                min_lower=2, min_upper=2, min_numeric=2, min_special=1,
+                override_special=password_special_chars) }}
   when:
     - current_ad_status == 'ROTATE'
     - current_valid_passwords | length > 0
   no_log: true
 
-- name: Alterar senha do proprio usuario no AD (pwsh/LDAP)
+- name: Alterar a senha no AD com a propria credencial do usuario (pwsh/LDAPS)
   ansible.builtin.command:
-    argv:
-      - "{{ pwsh_bin }}"
-      - "-NoProfile"
-      - "-NonInteractive"
-      - "-File"
-      - "{{ playbook_dir }}/files/ad_change_password.ps1"
-      - "-Username"
-      - "{{ current_user }}"
-      - "-Domain"
-      - "{{ ad_domain }}"
-      - "-Server"
-      - "{{ ldap_server }}"
-      - "-Port"
-      - "{{ ldap_port | string }}"
-      - "-UseSsl"
-      - "{{ ldap_use_ssl | ternary('true', 'false') }}"
-      - "-ValidateCerts"
-      - "{{ ldap_validate_certs | ternary('true', 'false') }}"
-  environment:
-    AD_OLD_PASSWORD: "{{ current_valid_passwords[0] }}"
-    AD_NEW_PASSWORD: "{{ current_new_password }}"
+    argv: "{{ [pwsh_bin, '-NoProfile', '-NonInteractive', '-File', ps_dir ~ '/ad_change_password.ps1', '-Username', current_user] + ps_common_args }}"
+    stdin: "{{ {'old_password': current_valid_passwords[0], 'new_password': current_new_password} | to_json }}"
+  environment: "{{ ps_env }}"
   register: password_change_raw
   changed_when: false
   failed_when: false
@@ -177,35 +140,43 @@
   ansible.builtin.set_fact:
     password_change_result: >-
       {{
-        (password_change_raw.stdout | from_json)
+        (password_change_raw.stdout | trim | split('\n') | last | from_json)
         if (password_change_raw.stdout | default('') | trim | length > 0)
         else {
           'changed': false,
-          'error': (password_change_raw.stderr | default('Falha ao executar o pwsh no bastion'))
+          'reason': 'ERROR',
+          'error': (password_change_raw.stderr | default('Falha ao executar o pwsh no bastion', true))
         }
       }}
   when:
     - current_ad_status == 'ROTATE'
     - current_valid_passwords | length > 0
-  no_log: true
+
+- name: Debug da troca de senha
+  ansible.builtin.debug:
+    msg:
+      changed: "{{ password_change_result.changed | default(false) }}"
+      reason: "{{ password_change_result.reason | default('') }}"
+      error: "{{ password_change_result.error | default('') }}"
+  when:
+    - rotation_debug | bool
+    - password_change_result | length > 0
 
 - name: Tratar falha na troca do AD
   ansible.builtin.set_fact:
-    current_ad_status: 'AD_CHANGE_FAILED'
-    current_ad_detail: "{{ password_change_result.error | default('Falha ao alterar a senha no AD') | string }}"
+    current_ad_status: >-
+      {{ 'PASSWORD_CANT_CHANGE' if (password_change_result.reason | default('') == 'CANT_CHANGE') else 'AD_CHANGE_FAILED' }}
+    current_ad_detail: "{{ password_change_result.error | default('Falha ao alterar a senha no AD', true) | string }}"
   when:
     - current_ad_status == 'ROTATE'
     - not (password_change_result.changed | default(false) | bool)
-  no_log: true
 
 - name: Confirmar sucesso da troca no AD
   ansible.builtin.set_fact:
-    current_user_rotation_attempted: true
     current_user_rotation_success: true
   when:
     - current_ad_status == 'ROTATE'
     - password_change_result.changed | default(false) | bool
-  no_log: true
 
 - name: Atualizar todos os Secrets do usuario apos AD OK
   ansible.builtin.include_tasks: update_secret.yml
@@ -218,28 +189,28 @@
 # Relatorio sem senha.
 - name: Adicionar linhas do usuario ao relatorio
   ansible.builtin.set_fact:
-    report_rows: "{{ report_rows + [ {
+    report_rows: "{{ report_rows + [{
       'username': current_user,
       'cluster': location.cluster,
       'environment': location.environment,
       'namespace': location.namespace,
       'secret': location.secret,
       'days_remaining': (current_ad.days_remaining | default('N/A')),
+      'expiration_date': (current_ad.expiration_date | default('', true)),
       'status': (
-        'UPDATED' if (current_user_rotation_success and location_update_status | default('') == 'UPDATED')
-        else 'SECRET_UPDATE_FAILED' if (current_user_rotation_success and location_update_status | default('') == 'SECRET_UPDATE_FAILED')
+        location_update_status if current_user_rotation_success
         else current_ad_status
       ),
       'detail': (
-        location_update_detail | default('Senha alterada no AD e Secret atualizado')
-        if current_user_rotation_success
+        location_update_detail if current_user_rotation_success
         else current_ad_detail | default('')
       )
-    } ] }}"
+    }] }}"
   loop: "{{ current_locations }}"
   loop_control:
     loop_var: location
+    label: "{{ location.cluster }}/{{ location.namespace }}/{{ location.secret }}"
   vars:
-    location_update_status: "{{ location_update_status_by_secret[location.cluster ~ '|' ~ location.namespace ~ '|' ~ location.secret] | default('') }}"
-    location_update_detail: "{{ location_update_detail_by_secret[location.cluster ~ '|' ~ location.namespace ~ '|' ~ location.secret] | default('') }}"
-  no_log: true
+    location_key: "{{ location.cluster ~ '|' ~ location.namespace ~ '|' ~ location.secret }}"
+    location_update_status: "{{ location_update_status_by_secret[location_key] | default('SECRET_UPDATE_FAILED') }}"
+    location_update_detail: "{{ location_update_detail_by_secret[location_key] | default('Secret nao atualizado.') }}"

@@ -1,0 +1,40 @@
+---
+# Testa UMA senha candidata (candidate_password). Nao faz nada se uma senha
+# valida ja foi encontrada ou se a conta ficou bloqueada.
+- name: Validar senha candidata no AD (bind como o proprio usuario)
+  ansible.builtin.command:
+    argv: "{{ [pwsh_bin, '-NoProfile', '-NonInteractive', '-File', ps_dir ~ '/ad_validate_password.ps1', '-Username', current_user] + ps_common_args }}"
+    stdin: "{{ {'password': candidate_password} | to_json }}"
+  environment: "{{ ps_env }}"
+  register: candidate_raw
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when:
+    - current_valid_passwords | length == 0
+    - not current_stop_validation
+
+- name: Interpretar validacao
+  ansible.builtin.set_fact:
+    candidate_result: >-
+      {{
+        (candidate_raw.stdout | trim | split('\n') | last | from_json)
+        if (candidate_raw.stdout | default('') | trim | length > 0)
+        else {'valid': false, 'reason': 'ERROR', 'error': (candidate_raw.stderr | default('', true))}
+      }}
+  when: candidate_raw is not skipped
+
+- name: Debug da validacao
+  ansible.builtin.debug:
+    msg: "valid={{ candidate_result.valid }} reason={{ candidate_result.reason }} error={{ candidate_result.error | default('') }}"
+  when:
+    - rotation_debug | bool
+    - candidate_raw is not skipped
+
+- name: Registrar resultado da validacao
+  ansible.builtin.set_fact:
+    current_valid_passwords: "{{ current_valid_passwords + ([candidate_password] if (candidate_result.valid | bool) else []) }}"
+    current_validation_reasons: "{{ current_validation_reasons + [candidate_result.reason | default('ERROR')] }}"
+    current_stop_validation: "{{ (candidate_result.reason | default('')) in ['LOCKED', 'DISABLED', 'ACCOUNT_EXPIRED'] }}"
+  when: candidate_raw is not skipped
+  no_log: true
