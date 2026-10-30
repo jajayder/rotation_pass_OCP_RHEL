@@ -11,7 +11,9 @@
 #                           {"OCPD2": "sha256~...", "OCPH2": "sha256~..."}
 #                           [{"label": "OCPD2", "token": "sha256~..."}, ...]
 # Nome da variavel que traz os tokens (caso a credencial use outro nome).
-ocp_tokens_var: "ocp_tokens"
+# = nome da variavel criada pelo INJECTOR da credencial "OCP TOkens Multi-Cluster"
+#   no AAP (extra_vars: ocp_tokens_raw: '{{ ocp_tokens }}').
+ocp_tokens_var: "ocp_tokens_raw"
 
 # Dominio AD
 ad_domain: "scl.corp"
@@ -86,13 +88,13 @@ mail_from: "iac-infra@energisa.com.br"
 mail_to:
   - jayder.carneiro@energisaterceiros.com.br
   - carlos.aquino@energisa.com.br
-  - lmauricio.dutra@energisaterceiros.com.br
-  - valeria.victor@energisa.com.br
-  - hugo@energisa.com.br
-  - carlos.andre@energisa.com.br
-  - antonio.neves@energisa.com.br
-  - john.sousa@energisa.com.br
-  - phenrique.ccosta@energisaterceiros.com.br
+#  - lmauricio.dutra@energisaterceiros.com.br
+  # - valeria.victor@energisa.com.br
+  # - hugo@energisa.com.br
+  # - carlos.andre@energisa.com.br
+  # - antonio.neves@energisa.com.br
+  # - john.sousa@energisa.com.br
+  # - phenrique.ccosta@energisaterceiros.com.br
 mail_cc: []
 mail_subject_prefix: "Atualização de credenciais"
 # TEMPORARIO (fase de validacao): mostra o resultado e so envia o e-mail apos
