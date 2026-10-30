@@ -1,0 +1,42 @@
+---
+# Grava (add) ou remove (remove) data.<secret_pending_key> nos Secrets informados.
+# Entrada: pending_action (add|remove), pending_targets (lista de locations),
+#          current_new_password (para add).
+# Saida:   pending_op_failures (cluster/namespace/secret que falharam), pending_op_error
+- name: "Chave pendente ({{ pending_action }})"
+  kubernetes.core.k8s_json_patch:
+    host: "{{ pending_session.cluster.api_url }}"
+    api_key: "{{ pending_session.api_key }}"
+    validate_certs: "{{ ocp_validate_certs }}"
+    api_version: v1
+    kind: Secret
+    namespace: "{{ pending_location.namespace }}"
+    name: "{{ pending_location.secret }}"
+    patch: >-
+      {{ [{'op': 'add', 'path': '/data/' ~ secret_pending_key, 'value': current_new_password | b64encode}]
+         if pending_action == 'add'
+         else [{'op': 'remove', 'path': '/data/' ~ secret_pending_key}] }}
+  vars:
+    pending_session: "{{ ocp_sessions | selectattr('cluster.name', 'equalto', pending_location.cluster) | list | first }}"
+  loop: "{{ pending_targets }}"
+  loop_control:
+    loop_var: pending_location
+    label: "{{ pending_location.cluster }}/{{ pending_location.namespace }}/{{ pending_location.secret }}"
+  delegate_to: localhost
+  register: pending_patch_res
+  retries: 3
+  delay: 5
+  until: pending_patch_res is succeeded
+  ignore_errors: true   # tratado abaixo
+  no_log: true          # o retorno contem o Secret inteiro
+
+- name: "Conferir chave pendente ({{ pending_action }})"
+  ansible.builtin.set_fact:
+    pending_op_failures: >-
+      {{ pending_op_failures + (pending_patch_res.results | default([])
+         | selectattr('failed', 'defined') | selectattr('failed')
+         | map(attribute='pending_location') | map(attribute='namespace') | list) }}
+    pending_op_error: >-
+      {{ (pending_patch_res.results | default([]) | selectattr('failed', 'defined') | selectattr('failed')
+          | map(attribute='msg') | first | default(''))
+         | regex_replace('[A-Za-z0-9+/=]{16,}', '***') | truncate(200) }}

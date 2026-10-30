@@ -36,6 +36,7 @@
     secret_inventory: "{{ secret_inventory + [{
       'username': (secret_item.data.username | b64decode | trim | lower),
       'password': (secret_item.data.password | b64decode),
+      'pending': (secret_item.data[secret_pending_key] | default('') | b64decode),
       'cluster': ocp_session.cluster.name,
       'environment': ocp_session.cluster.environment,
       'namespace': secret_item.metadata.namespace,

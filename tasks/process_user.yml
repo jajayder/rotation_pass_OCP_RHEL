@@ -1,11 +1,22 @@
 ---
 # Processa UM aplic-user (current_user), que pode estar em varios Secrets/clusters.
-# Senhas sao passadas aos scripts por STDIN (dentro do payload do modulo, coberto
+# Senhas sao passadas ao script por STDIN (dentro do payload do modulo, coberto
 # pelo no_log) - nunca no argv nem em variavel de ambiente.
+#
+# Protecao da senha nova: antes da troca no AD ela e gravada em
+# data.<secret_pending_key> de TODOS os Secrets do usuario. Se a execucao cair
+# entre a troca no AD e a atualizacao do Secret, a proxima execucao encontra a
+# senha pendente, valida no AD e conclui sozinha (status RECOVERED).
 
 - name: Inicializar contexto do usuario
   ansible.builtin.set_fact:
     current_locations: "{{ secret_inventory | selectattr('username', 'equalto', current_user) | list }}"
+    # Mesma lista SEM senhas: e a unica usada em loops (o Ansible imprime o item
+    # do loop no log a partir de -v, inclusive em tasks puladas).
+    current_targets: >-
+      {% set t = [] %}{% for l in secret_inventory if l.username == current_user %}{% set _ = t.append({
+        'cluster': l.cluster, 'environment': l.environment, 'namespace': l.namespace,
+        'secret': l.secret, 'has_pending': (l.pending | length > 0)}) %}{% endfor %}{{ t }}
     current_ad: {}
     current_valid_passwords: []
     current_validation_reasons: []
@@ -14,11 +25,26 @@
     current_ad_status: 'UNKNOWN'
     current_ad_detail: ''
     current_user_rotation_success: false
+    current_success_status: 'UPDATED'
+    current_success_detail: 'Senha alterada no AD e password atualizado no Secret.'
+    current_recovered: false
     password_change_result: {}
+    pending_op_failures: []
+  no_log: true
+
+- name: Identificar senhas pendentes de execucao anterior
+  ansible.builtin.set_fact:
+    current_pendings: "{{ current_locations | map(attribute='pending') | select | unique | list }}"
+    current_pending_keys: >-
+      {% set k = [] %}{% for l in current_locations if l.pending %}{% set _ = k.append(
+      l.cluster ~ '|' ~ l.namespace ~ '|' ~ l.secret) %}{% endfor %}{{ k }}
+    current_change_uncertain: false
   no_log: true
 
 # Senhas distintas encontradas nos Secrets, da mais repetida para a menos repetida,
 # limitadas a max_password_candidates (protecao contra bloqueio da conta no AD).
+# Senhas pendentes vem primeiro: se uma delas for a valida, a troca anterior ja
+# aconteceu no AD.
 - name: Ordenar senhas candidatas
   ansible.builtin.set_fact:
     current_candidates: >-
@@ -27,19 +53,16 @@
       {%- for p in pws | unique -%}
       {%- set ns.items = ns.items + [{'password': p, 'count': (pws | select('equalto', p) | list | length)}] -%}
       {%- endfor -%}
-      {{ (ns.items | sort(attribute='count', reverse=true) | map(attribute='password') | list)[:(max_password_candidates | int)] }}
+      {{ ((current_pendings + (ns.items | sort(attribute='count', reverse=true) | map(attribute='password') | list))
+          | unique | list)[:(max_password_candidates | int)] }}
     current_distinct_passwords: "{{ current_locations | map(attribute='password') | unique | list | length }}"
   no_log: true
 
-- name: Consultar expiracao da senha no AD (pwsh/LDAP no bastion)
+- name: Consultar expiracao da senha no AD (LDAP no bastion)
   ansible.builtin.command:
-    argv: >-
-      {{ [pwsh_bin, '-NoProfile', '-NonInteractive', '-File', ps_dir ~ '/ad_get_user_expiry.ps1',
-          '-Username', current_user] + ps_common_args +
-         ['-RotateMinDays', password_rotation_min_days | string,
-          '-RotateMaxDays', password_rotation_max_days | string] }}
+    argv: ["{{ ad_script }}", "expiry", "{{ current_user }}"]
     stdin: "{{ {'bind_user': ldap_bind_user, 'bind_password': ldap_bind_password} | to_json }}"
-  environment: "{{ ps_env }}"
+  environment: "{{ ad_env }}"
   register: ad_query_raw
   changed_when: false
   failed_when: false
@@ -58,13 +81,13 @@
     current_ad: >-
       {{
         (ad_query_raw.stdout | trim | split('\n') | last | from_json)
-        if (ad_query_raw.stdout | default('') | trim | length > 0)
+        if (ad_query_raw.stdout | default('') | trim | regex_search('[{].*[}]$'))
         else {
           'status': 'AD_LOOKUP_FAILED',
           'days_remaining': 'N/A',
           'expiration_date': None,
           'can_change': None,
-          'error': (ad_query_raw.stderr | default(ad_query_raw.msg | default('Falha ao executar o pwsh no bastion'), true))
+          'error': (ad_query_raw.stderr | default(ad_query_raw.msg | default('Falha ao executar o script LDAP no bastion'), true))
         }
       }}
 
@@ -85,14 +108,58 @@
     - current_ad_status == 'ROTATE'
     - current_ad.can_change is sameas false
 
+# NOT_DUE com pendencia: so as senhas pendentes sao testadas (a do Secret ja e a
+# vigente se a pendencia for invalida).
+- name: Limitar candidatas as pendentes quando nao ha troca a fazer
+  ansible.builtin.set_fact:
+    current_candidates: "{{ current_pendings[:(max_password_candidates | int)] }}"
+  when:
+    - current_ad_status == 'NOT_DUE'
+    - current_pendings | length > 0
+  no_log: true
+
 - name: Validar senhas dos Secrets contra o AD (para na primeira valida)
   ansible.builtin.include_tasks: validate_candidate.yml
-  loop: "{{ current_candidates }}"
+  loop: "{{ range(current_candidates | length) | list }}"
   loop_control:
-    loop_var: candidate_password
+    loop_var: candidate_index
     label: "{{ current_user }} - candidata {{ candidate_index + 1 }}/{{ current_candidates | length }}"
-    index_var: candidate_index
-  when: current_ad_status == 'ROTATE'
+  when: >-
+    current_ad_status == 'ROTATE'
+    or (current_ad_status == 'NOT_DUE' and current_pendings | length > 0)
+
+- name: Detectar troca de execucao anterior ja aplicada no AD
+  ansible.builtin.set_fact:
+    current_recovered: "{{ (current_valid_passwords | length > 0) and (current_valid_passwords[0] in current_pendings) }}"
+  no_log: true
+
+# ---- Recuperacao: AD ja tem a senha pendente -> so promove nesta execucao ----
+# (se ainda estiver na janela de troca, a nova troca acontece na proxima execucao)
+- name: Concluir troca de execucao anterior (promover senha pendente)
+  ansible.builtin.set_fact:
+    current_new_password: "{{ current_valid_passwords[0] }}"
+    current_user_rotation_success: true
+    current_success_status: 'RECOVERED'
+    current_success_detail: >-
+      Troca de execucao anterior concluida: a senha pendente ja estava ativa no AD e
+      foi aplicada no Secret.
+    current_ad_status: 'RECOVERING'
+  when: current_recovered | bool
+  no_log: true
+
+# So descarta se TODAS as pendentes foram testadas e recusadas como senha invalida
+# (erro de rede/bloqueio nao prova nada: mantem para a proxima execucao).
+- name: Descartar senhas pendentes invalidas
+  ansible.builtin.include_tasks: pending_patch.yml
+  vars:
+    pending_action: remove
+    pending_targets: "{{ current_targets | selectattr('has_pending') | list }}"
+  when:
+    - current_pendings | length > 0
+    - not (current_recovered | bool)
+    - current_ad_status in ['NOT_DUE', 'ROTATE']
+    - current_validation_reasons | length >= current_pendings | length
+    - (current_validation_reasons[:(current_pendings | length)] | unique) == ['INVALID']
 
 - name: Classificar falha de validacao
   ansible.builtin.set_fact:
@@ -123,11 +190,41 @@
     - current_valid_passwords | length > 0
   no_log: true
 
-- name: Alterar a senha no AD com a propria credencial do usuario (pwsh/LDAPS)
+# ---- Pre-gravacao: a senha nova fica salva no Secret ANTES de valer no AD ----
+- name: Pre-gravar senha nova nos Secrets (chave pendente)
+  ansible.builtin.include_tasks: pending_patch.yml
+  vars:
+    pending_action: add
+    pending_targets: "{{ current_targets }}"
+  when:
+    - current_ad_status == 'ROTATE'
+    - current_valid_passwords | length > 0
+
+- name: Abortar troca se a pre-gravacao falhou (AD nao e alterado)
+  ansible.builtin.set_fact:
+    current_ad_status: 'SECRET_UPDATE_FAILED'
+    current_ad_detail: >-
+      Falha ao pre-gravar a senha nova no(s) Secret(s) {{ pending_op_failures | join(', ') }}.
+      A senha NAO foi alterada no AD. {{ pending_op_error | default('') }}
+  when:
+    - current_ad_status == 'ROTATE'
+    - current_valid_passwords | length > 0
+    - pending_op_failures | length > 0
+
+- name: Marcar todos os Secrets com pendencia
+  ansible.builtin.set_fact:
+    current_pending_keys: >-
+      {% set k = [] %}{% for l in current_targets %}{% set _ = k.append(
+      l.cluster ~ '|' ~ l.namespace ~ '|' ~ l.secret) %}{% endfor %}{{ k }}
+  when:
+    - current_ad_status == 'ROTATE'
+    - current_valid_passwords | length > 0
+
+- name: Alterar a senha no AD com a propria credencial do usuario (LDAPS)
   ansible.builtin.command:
-    argv: "{{ [pwsh_bin, '-NoProfile', '-NonInteractive', '-File', ps_dir ~ '/ad_change_password.ps1', '-Username', current_user] + ps_common_args }}"
+    argv: ["{{ ad_script }}", "change", "{{ current_user }}"]
     stdin: "{{ {'old_password': current_valid_passwords[0], 'new_password': current_new_password} | to_json }}"
-  environment: "{{ ps_env }}"
+  environment: "{{ ad_env }}"
   register: password_change_raw
   changed_when: false
   failed_when: false
@@ -141,11 +238,12 @@
     password_change_result: >-
       {{
         (password_change_raw.stdout | trim | split('\n') | last | from_json)
-        if (password_change_raw.stdout | default('') | trim | length > 0)
+        if (password_change_raw.stdout | default('') | trim | regex_search('[{].*[}]$'))
         else {
           'changed': false,
           'reason': 'ERROR',
-          'error': (password_change_raw.stderr | default('Falha ao executar o pwsh no bastion', true))
+          'uncertain': true,
+          'error': (password_change_raw.stderr | default('Falha ao executar o script LDAP no bastion', true))
         }
       }}
   when:
@@ -157,6 +255,7 @@
     msg:
       changed: "{{ password_change_result.changed | default(false) }}"
       reason: "{{ password_change_result.reason | default('') }}"
+      uncertain: "{{ password_change_result.uncertain | default(false) }}"
       error: "{{ password_change_result.error | default('') }}"
   when:
     - rotation_debug | bool
@@ -166,21 +265,40 @@
   ansible.builtin.set_fact:
     current_ad_status: >-
       {{ 'PASSWORD_CANT_CHANGE' if (password_change_result.reason | default('') == 'CANT_CHANGE') else 'AD_CHANGE_FAILED' }}
-    current_ad_detail: "{{ password_change_result.error | default('Falha ao alterar a senha no AD', true) | string }}"
+    current_ad_detail: >-
+      {{ password_change_result.error | default('Falha ao alterar a senha no AD', true) | string }}
+      {{- (' | RESULTADO INCERTO: a troca pode ter sido aplicada. A senha nova esta preservada em data.'
+           ~ secret_pending_key ~ ' do Secret; a proxima execucao conclui automaticamente.')
+          if (password_change_result.uncertain | default(false) | bool) else ' | Senha atual mantida.' }}
+    current_change_uncertain: "{{ password_change_result.uncertain | default(false) | bool }}"
   when:
     - current_ad_status == 'ROTATE'
     - not (password_change_result.changed | default(false) | bool)
 
+- name: Remover pendencia apos recusa definitiva do AD
+  ansible.builtin.include_tasks: pending_patch.yml
+  vars:
+    pending_action: remove
+    pending_targets: "{{ current_targets }}"
+  when:
+    - current_ad_status in ['AD_CHANGE_FAILED', 'PASSWORD_CANT_CHANGE']
+    - password_change_result | length > 0
+    - not (current_change_uncertain | default(false) | bool)
+
 - name: Confirmar sucesso da troca no AD
   ansible.builtin.set_fact:
     current_user_rotation_success: true
+    current_success_detail: >-
+      Senha alterada no AD e password atualizado no Secret.
+      {{- '' if (password_change_result.verified | default(true) | bool)
+          else ' Atencao: o bind de confirmacao com a senha nova falhou (' ~ (password_change_result.error | default('')) ~ ').' }}
   when:
     - current_ad_status == 'ROTATE'
     - password_change_result.changed | default(false) | bool
 
 - name: Atualizar todos os Secrets do usuario apos AD OK
   ansible.builtin.include_tasks: update_secret.yml
-  loop: "{{ current_locations }}"
+  loop: "{{ current_targets }}"
   loop_control:
     loop_var: secret_location
     label: "{{ secret_location.cluster }}/{{ secret_location.namespace }}/{{ secret_location.secret }}"
@@ -203,10 +321,12 @@
       ),
       'detail': (
         location_update_detail if current_user_rotation_success
-        else current_ad_detail | default('')
+        else (current_ad_detail | default(''))
+             ~ ((' | Falha ao remover a chave ' ~ secret_pending_key ~ ' (sera limpa na proxima execucao).')
+                if pending_op_failures | length > 0 and current_ad_status != 'SECRET_UPDATE_FAILED' else '')
       )
     }] }}"
-  loop: "{{ current_locations }}"
+  loop: "{{ current_targets }}"
   loop_control:
     loop_var: location
     label: "{{ location.cluster }}/{{ location.namespace }}/{{ location.secret }}"
@@ -214,3 +334,12 @@
     location_key: "{{ location.cluster ~ '|' ~ location.namespace ~ '|' ~ location.secret }}"
     location_update_status: "{{ location_update_status_by_secret[location_key] | default('SECRET_UPDATE_FAILED') }}"
     location_update_detail: "{{ location_update_detail_by_secret[location_key] | default('Secret nao atualizado.') }}"
+
+- name: Limpar senhas do contexto do usuario
+  ansible.builtin.set_fact:
+    current_new_password: ''
+    current_valid_passwords: []
+    current_candidates: []
+    current_pendings: []
+    current_change_uncertain: false
+  no_log: true

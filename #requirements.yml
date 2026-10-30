@@ -6,5 +6,5 @@ collections:
     version: ">=5.0.0,<6.0.0"
   - name: community.general
     version: ">=13.0.0,<14.0.0"
-# ansible.windows nao e mais necessaria: os scripts .ps1 rodam no RHEL via
-# pwsh (ansible.builtin.command), nao mais via WinRM/win_powershell.
+# Nem ansible.windows nem pwsh sao necessarios: o AD e acessado do RHEL com
+# openldap-clients (files/ad_ldap.sh via ansible.builtin.command).

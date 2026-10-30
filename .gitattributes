@@ -1,0 +1,4 @@
+# Scripts executados no RHEL: sempre LF (CRLF quebra o bash: $'\r': command not found)
+*.sh text eol=lf
+*.yml text eol=lf
+*.j2 text eol=lf

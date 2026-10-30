@@ -16,28 +16,36 @@ ocp_tokens_var: "ocp_tokens"
 # Dominio AD
 ad_domain: "scl.corp"
 
-# Bastion RHEL que roda os .ps1 via pwsh e fala LDAP com o AD.
+# Bastion RHEL que roda o files/ad_ldap.sh (openldap-clients) e fala LDAP com o AD.
 ad_server: "OCBASTIOCPD2"
 
 # ---------------------------------------------------------------------------
-# Conexao LDAP com o AD a partir do bastion RHEL (pwsh / S.DS.Protocols)
+# Conexao LDAP com o AD a partir do bastion RHEL (ldapsearch / ldapmodify)
 # ---------------------------------------------------------------------------
-# FQDN de um Domain Controller ou o proprio dominio (round-robin). Ex.: "dc01.scl.corp".
-ldap_server: "{{ ad_domain }}"
+# DC fixo (o mesmo do exp-usu.sh): consulta, validacao, troca e confirmacao
+# acontecem no MESMO DC, sem depender de replicacao. Use "{{ ad_domain }}" para
+# round-robin.
+ldap_server: "ocinfradcsp2.scl.corp"
 # LDAPS e obrigatorio para a troca de senha (unicodePwd).
 ldap_port: 636
 ldap_use_ssl: true
-# false = nao valida o certificado do DC (LDAPTLS_REQCERT=never no RHEL).
-# true  = valida (publique a CA do AD no trust do RHEL: update-ca-trust).
+# false = nao valida o certificado do DC (LDAPTLS_REQCERT=never).
+# true  = valida (RECOMENDADO): publique a CA do AD no trust do RHEL
+#         (/etc/pki/ca-trust/source/anchors + update-ca-trust) ou informe ldap_ca_file.
 ldap_validate_certs: false
+ldap_ca_file: ""
+# Base de busca (vazio = derivada de ad_domain -> DC=scl,DC=corp)
+ldap_base_dn: ""
+ldap_timeout: 20
 
 # Bind de LEITURA no AD = a propria credencial ad_user/ad_pass do AAP.
 # Validar e trocar senha usam a senha do proprio aplic-user, nao esta conta.
 ldap_bind_user: "{{ ad_user | default('') }}"
 ldap_bind_password: "{{ ad_pass | default('') }}"
 
-# PowerShell Core no RHEL.
-pwsh_bin: "/usr/bin/pwsh"
+# Chave temporaria no Secret com a senha nova durante a troca. Garante que a
+# senha nova nunca se perde se o job cair entre a troca no AD e o patch do Secret.
+secret_pending_key: "password-pendente"
 
 # ---------------------------------------------------------------------------
 # Regras de rotacao

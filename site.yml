@@ -1,5 +1,5 @@
 ---
-- name: Rotacao de senhas dos aplic-users OCP x AD (bastion RHEL / pwsh)
+- name: Rotacao de senhas dos aplic-users OCP x AD (bastion RHEL / openldap)
   hosts: ad_bastion
   gather_facts: false
   strategy: linear
@@ -37,7 +37,7 @@
 
     - name: Executar rotacao
       block:
-        - name: step 00 - Preparar scripts no bastion
+        - name: step 00 - Preparar script LDAP no bastion
           ansible.builtin.include_tasks: tasks/00_prepare_bastion.yml
 
         - name: step 01 - Carregar tokens dos clusters
@@ -55,8 +55,8 @@
       always:
         # Os tokens vem da credencial do AAP e NAO sao revogados ao final
         # (openshift_auth state=absent invalidaria o token da credencial).
-        - name: Remover scripts temporarios do bastion
+        - name: Remover script temporario do bastion
           ansible.builtin.file:
-            path: "{{ remote_ps_dir.path }}"
+            path: "{{ remote_ad_dir.path }}"
             state: absent
-          when: remote_ps_dir.path is defined
+          when: remote_ad_dir.path is defined

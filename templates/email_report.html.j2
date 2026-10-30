@@ -1,5 +1,6 @@
 {%- set labels = {
   'UPDATED': 'ATUALIZADO',
+  'RECOVERED': 'ATUALIZADO (troca anterior concluída)',
   'NOT_DUE': 'NÃO ALTERADO (> ' ~ password_rotation_max_days ~ ' dias)',
   'PASSWORD_EXPIRED': 'SENHA EXPIRADA',
   'PASSWORD_CANT_CHANGE': 'USUÁRIO NÃO PODE TROCAR A SENHA',
@@ -16,7 +17,7 @@
 {%- set css_failed = ['PASSWORD_EXPIRED','PASSWORD_CANT_CHANGE','PASSWORD_NOT_COMPATIBLE','AD_ACCOUNT_LOCKED','AD_ACCOUNT_DISABLED','AD_CHANGE_FAILED','AD_LOOKUP_FAILED','SECRET_UPDATE_FAILED','CLUSTER_ACCESS_FAILED','SECRET_DISCOVERY_FAILED'] -%}
 {%- set user_rows = report_rows | rejectattr('username', 'equalto', 'N/A') | list -%}
 {%- set manual_rows = user_rows | selectattr('status', 'in', report_manual_statuses) | list -%}
-{%- set updated_rows = user_rows | selectattr('status', 'equalto', 'UPDATED') | list -%}
+{%- set updated_rows = user_rows | selectattr('status', 'in', ['UPDATED', 'RECOVERED']) | list -%}
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -62,6 +63,7 @@ table.report td { padding: 7px; border: 1px solid #ccc; vertical-align: top; }
 <tr><td>Clusters consultados com sucesso</td><td>{{ report_summary.clusters_ok }} de {{ report_summary.clusters_count }}</td></tr>
 <tr><td>Usuários encontrados</td><td>{{ report_summary.users_found }} (em {{ report_summary.secrets_found }} Secrets)</td></tr>
 <tr><td>Usuários com senha alterada</td><td>{{ report_summary.users_updated }} ({{ report_summary.secrets_updated }} Secrets atualizados)</td></tr>
+<tr><td>Trocas de execução anterior concluídas</td><td>{{ report_summary.recovered }}</td></tr>
 <tr><td>Senhas expiradas (troca manual)</td><td>{{ report_summary.password_expired }}</td></tr>
 <tr><td>Usuário não pode trocar a senha</td><td>{{ report_summary.cant_change }}</td></tr>
 <tr><td>Senha dos Secrets não confere com o AD</td><td>{{ report_summary.not_compatible }}</td></tr>
@@ -115,7 +117,7 @@ table.report td { padding: 7px; border: 1px solid #ccc; vertical-align: top; }
 </thead>
 <tbody>
 {% for row in report_rows | sort(attribute='cluster') | sort(attribute='username') %}
-{% set css = 'updated' if row.status == 'UPDATED' else 'failed' if row.status in css_failed else 'warning' if row.status == 'PASSWORD_NEVER_EXPIRES' else 'neutral' %}
+{% set css = 'updated' if row.status in ['UPDATED', 'RECOVERED'] else 'failed' if row.status in css_failed else 'warning' if row.status == 'PASSWORD_NEVER_EXPIRES' else 'neutral' %}
 <tr class="{{ css }}">
 <td>{{ row.username }}</td>
 <td>{{ row.environment | default('N/A') }}</td>

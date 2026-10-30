@@ -1,11 +1,11 @@
 ---
-# Testa UMA senha candidata (candidate_password). Nao faz nada se uma senha
+# Testa UMA senha candidata (current_candidates[candidate_index]). Nao faz nada se uma senha
 # valida ja foi encontrada ou se a conta ficou bloqueada.
 - name: Validar senha candidata no AD (bind como o proprio usuario)
   ansible.builtin.command:
-    argv: "{{ [pwsh_bin, '-NoProfile', '-NonInteractive', '-File', ps_dir ~ '/ad_validate_password.ps1', '-Username', current_user] + ps_common_args }}"
-    stdin: "{{ {'password': candidate_password} | to_json }}"
-  environment: "{{ ps_env }}"
+    argv: ["{{ ad_script }}", "validate", "{{ current_user }}"]
+    stdin: "{{ {'password': current_candidates[candidate_index]} | to_json }}"
+  environment: "{{ ad_env }}"
   register: candidate_raw
   changed_when: false
   failed_when: false
@@ -33,7 +33,7 @@
 
 - name: Registrar resultado da validacao
   ansible.builtin.set_fact:
-    current_valid_passwords: "{{ current_valid_passwords + ([candidate_password] if (candidate_result.valid | bool) else []) }}"
+    current_valid_passwords: "{{ current_valid_passwords + ([current_candidates[candidate_index]] if (candidate_result.valid | bool) else []) }}"
     current_validation_reasons: "{{ current_validation_reasons + [candidate_result.reason | default('ERROR')] }}"
     current_stop_validation: "{{ (candidate_result.reason | default('')) in ['LOCKED', 'DISABLED', 'ACCOUNT_EXPIRED'] }}"
   when: candidate_raw is not skipped

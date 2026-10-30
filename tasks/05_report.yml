@@ -22,6 +22,7 @@
       users_found: "{{ unique_aplic_users | length }}"
       secrets_found: "{{ secret_inventory | length }}"
       users_updated: "{{ users_with | selectattr('status', 'equalto', 'UPDATED') | map(attribute='username') | unique | list | length }}"
+      recovered: "{{ users_with | selectattr('status', 'equalto', 'RECOVERED') | map(attribute='username') | unique | list | length }}"
       secrets_updated: "{{ secrets_updated_count | int }}"
       password_expired: "{{ users_with | selectattr('status', 'equalto', 'PASSWORD_EXPIRED') | map(attribute='username') | unique | list | length }}"
       cant_change: "{{ users_with | selectattr('status', 'equalto', 'PASSWORD_CANT_CHANGE') | map(attribute='username') | unique | list | length }}"
