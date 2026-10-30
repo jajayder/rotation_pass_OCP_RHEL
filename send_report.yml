@@ -1,0 +1,38 @@
+---
+# Envia o relatorio gerado pelo site.yml, depois da aprovacao no Workflow do AAP.
+#
+# Workflow:  [site.yml] --sucesso--> [Aprovacao] --aprovado--> [send_report.yml]
+# O site.yml (com mail_require_confirmation: true) publica report_html e
+# report_subject via set_stats; o AAP repassa esses artefatos como extra vars
+# para os nos seguintes do Workflow.
+- name: Enviar relatorio de rotacao aprovado
+  hosts: ad_bastion
+  gather_facts: false
+  vars_files:
+    - group_vars/vars.yml
+
+  tasks:
+    - name: Conferir se o relatorio veio do job de rotacao
+      ansible.builtin.assert:
+        that:
+          - report_html is defined and report_html | length > 0
+          - report_subject is defined and report_subject | length > 0
+        fail_msg: >-
+          Relatorio nao recebido. Este playbook deve rodar num Workflow, depois do
+          job do site.yml (com mail_require_confirmation: true) e do no de aprovacao.
+        quiet: true
+
+    - name: Enviar relatorio por e-mail
+      community.general.mail:
+        host: "{{ mail_host }}"
+        port: "{{ mail_port }}"
+        from: "{{ mail_from }}"
+        to: "{{ mail_to }}"
+        cc: "{{ mail_cc }}"
+        subject: "{{ report_subject }}"
+        subtype: html
+        charset: utf-8
+        body: "{{ report_html }}"
+      # O envio sai do bastion (SMTP liberado a partir dele).
+      vars:
+        ansible_python_interpreter: "{{ mail_python_interpreter }}"

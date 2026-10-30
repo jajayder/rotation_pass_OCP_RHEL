@@ -35,6 +35,68 @@
   ansible.builtin.set_fact:
     report_html: "{{ lookup('ansible.builtin.template', 'templates/email_report.html.j2') }}"
 
+- name: Definir assunto do e-mail
+  ansible.builtin.set_fact:
+    report_subject: >-
+      {{ mail_subject_prefix }} - {{ run_date }}
+      {%- set manual = report_rows | selectattr('status', 'in', report_manual_statuses) | list | length -%}
+      {{ ' - ACAO MANUAL NECESSARIA' if manual > 0 else '' }}
+
+# ---------------------------------------------------------------------------
+# Conferencia antes do envio (mail_require_confirmation: true)
+# ---------------------------------------------------------------------------
+- name: Resultado para conferencia
+  ansible.builtin.debug:
+    msg: >-
+      {% set out = ['ASSUNTO: ' ~ report_subject,
+                    'DESTINATARIOS: ' ~ (mail_to + mail_cc) | join(', '),
+                    'RESUMO: ' ~ report_summary.users_updated ~ ' usuario(s) alterado(s), '
+                      ~ report_summary.secrets_updated ~ ' Secret(s) atualizado(s), '
+                      ~ (report_rows | selectattr('status', 'in', report_manual_statuses) | map(attribute='username') | unique | list | length)
+                      ~ ' com acao manual', '----'] %}
+      {%- for r in report_rows | sort(attribute='username') %}{% set _ = out.append(
+        r.status ~ ' | ' ~ r.username ~ ' | ' ~ r.cluster ~ '/' ~ r.namespace ~ '/' ~ r.secret
+        ~ ' | dias=' ~ r.days_remaining ~ ((' | ' ~ r.detail) if r.detail else '')) %}{% endfor %}{{ out }}
+  when: mail_require_confirmation | bool
+
+- name: Identificar execucao no AAP (sem terminal para perguntar)
+  ansible.builtin.set_fact:
+    mail_running_in_aap: "{{ (awx_job_id is defined) or (tower_job_id is defined) }}"
+    mail_confirmed: "{{ not (mail_require_confirmation | bool) }}"
+
+- name: Perguntar se o e-mail deve ser enviado (execucao via linha de comando)
+  ansible.builtin.pause:
+    prompt: "Conferiu o resultado acima? Enviar o e-mail de relatorio para {{ (mail_to + mail_cc) | join(', ') }}? (s/N)"
+  register: mail_answer
+  when:
+    - mail_require_confirmation | bool
+    - not (mail_running_in_aap | bool)
+
+- name: Registrar resposta
+  ansible.builtin.set_fact:
+    mail_confirmed: "{{ (mail_answer.user_input | default('') | trim | lower) in ['s', 'sim', 'y', 'yes'] }}"
+  when: mail_answer is not skipped and mail_answer.user_input is defined
+
+# No AAP: o relatorio vira artefato do job. Num Workflow, o no seguinte
+# (Aprovacao -> send_report.yml) recebe report_html/report_subject e envia.
+- name: Disponibilizar relatorio para o Workflow (aprovacao no AAP)
+  ansible.builtin.set_stats:
+    data:
+      report_html: "{{ report_html }}"
+      report_subject: "{{ report_subject }}"
+    per_host: false
+  when:
+    - mail_require_confirmation | bool
+    - mail_running_in_aap | bool
+
+- name: Aviso - e-mail nao enviado
+  ansible.builtin.debug:
+    msg: >-
+      E-mail NAO enviado (mail_require_confirmation=true).
+      {{ 'Aprove o no de aprovacao do Workflow para enviar (send_report.yml).'
+         if (mail_running_in_aap | bool) else 'Envio cancelado na confirmacao.' }}
+  when: not (mail_confirmed | bool)
+
 - name: Enviar relatorio por e-mail
   community.general.mail:
     host: "{{ mail_host }}"
@@ -42,13 +104,11 @@
     from: "{{ mail_from }}"
     to: "{{ mail_to }}"
     cc: "{{ mail_cc }}"
-    subject: >-
-      {{ mail_subject_prefix }} - {{ run_date }}
-      {%- set manual = report_rows | selectattr('status', 'in', report_manual_statuses) | list | length -%}
-      {{ ' - ACAO MANUAL NECESSARIA' if manual > 0 else '' }}
+    subject: "{{ report_subject }}"
     subtype: html
     charset: utf-8
     body: "{{ report_html }}"
   # O envio sai do bastion (SMTP liberado a partir dele).
   vars:
     ansible_python_interpreter: "{{ mail_python_interpreter }}"
+  when: mail_confirmed | bool

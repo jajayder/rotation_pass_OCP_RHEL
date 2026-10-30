@@ -95,6 +95,10 @@ mail_to:
   # - phenrique.ccosta@energisaterceiros.com.br
 mail_cc: []
 mail_subject_prefix: "Atualização de credenciais"
+# TEMPORARIO (fase de validacao): mostra o resultado e so envia o e-mail apos
+# confirmacao. No AAP use o Workflow com aprovacao (send_report.yml); na linha
+# de comando o playbook pergunta (s/N). Depois de validado: false = envio automatico.
+mail_require_confirmation: true
 # O envio sai do bastion (SMTP liberado a partir dele).
 mail_python_interpreter: /usr/bin/python3.12
 report_timezone: "America/Sao_Paulo"

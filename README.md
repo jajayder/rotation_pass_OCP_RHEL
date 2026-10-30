@@ -112,6 +112,31 @@ relatório marca **FALHA AO ATUALIZAR SECRET**. A senha nova está preservada em
 timeout durante o `ldapmodify` (*resultado incerto*): a pendência é mantida e a próxima execução
 descobre se a troca foi aplicada.
 
+## Conferência antes de enviar o e-mail (fase de validação)
+
+Enquanto `mail_require_confirmation: true` (em `group_vars/vars.yml`), o relatório **não é
+enviado automaticamente**. O job mostra no output a task **"Resultado para conferencia"**
+(assunto, destinatários, resumo e uma linha por Secret) e:
+
+- **No AAP:** não envia. Publica o relatório como artefato (`set_stats`) para o Workflow:
+
+  ```
+  [JT Rotacao: site.yml] --sucesso--> [Aprovacao] --aprovado--> [JT Envio: send_report.yml]
+  ```
+
+  1. Crie o Job Template **Envio do relatório** com o playbook `send_report.yml`, o mesmo
+     inventário e a mesma credencial do bastion.
+  2. Crie um **Workflow Job Template**: nó 1 = JT de rotação; nó 2 (*On Success*) = **Approval**
+     (ex.: timeout de 8h); nó 3 (*On Success* da aprovação) = JT de envio.
+  3. Rode o Workflow, abra o output do nó 1, confira e clique em **Aprovar** (envia) ou
+     **Negar** (não envia). Os artefatos `report_html`/`report_subject` passam do nó 1 para o
+     nó 3 automaticamente.
+- **Na linha de comando:** pergunta `Enviar o e-mail de relatorio...? (s/N)`. Só `s`/`sim`
+  envia; Enter ou qualquer outra resposta cancela.
+
+Depois de validado: `mail_require_confirmation: false` e o e-mail volta a sair
+automaticamente no próprio `site.yml` (o Workflow pode voltar a ser só o JT de rotação).
+
 ## Teste manual do script no bastion
 
 ```bash
